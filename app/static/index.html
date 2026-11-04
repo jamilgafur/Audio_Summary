@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Reader</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
+<link rel="stylesheet" href="/static/pico.min.css">
+<style>
+  :root { --grad: linear-gradient(120deg, #7c6cff, #38b6ff 55%, #2ee6a8); }
+  body { max-width: 880px; margin: 0 auto; }
+
+  /* hero */
+  .hero { text-align: center; padding: 2.5rem 1rem 1rem; }
+  .hero h1 { font-size: 2.2rem; margin-bottom: .3rem;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text;
+    color: transparent; }
+  .hero p { color: var(--pico-muted-color); margin: 0; }
+
+  /* drop zone */
+  #drop {
+    margin-top: 1.5rem; text-align: center; cursor: pointer;
+    border: 2px dashed var(--pico-muted-border-color); border-radius: 16px;
+    padding: 2.75rem 1rem; color: var(--pico-muted-color);
+    transition: border-color .15s, transform .15s, box-shadow .15s;
+  }
+  #drop .big { font-size: 1.9rem; display: block; margin-bottom: .25rem; }
+  #drop.over { border-color: #38b6ff; color: #38b6ff; transform: scale(1.01);
+    box-shadow: 0 0 32px #38b6ff33; }
+  #uploadbar { margin-top: 1rem; display: none; }
+
+  /* toast */
+  #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%);
+    background: #7a2f2f; color: #fff; padding: .6rem 1.1rem; border-radius: 10px;
+    font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 9; }
+  #toast.show { opacity: 1; }
+
+  /* job cards */
+  .card { border: 1px solid var(--pico-muted-border-color); border-radius: 14px;
+    padding: 1.1rem 1.25rem; margin-bottom: 1rem; background: #ffffff08; }
+  .card h3 { margin: 0 0 .5rem; font-size: 1.02rem; word-break: break-word; }
+  .meta { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap;
+    color: var(--pico-muted-color); font-size: .85rem; }
+  .badge { border-radius: 999px; padding: .12rem .65rem; font-size: .72rem;
+    font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+  .badge.working { background: #31517a; }
+  .badge.done { background: #2e6b3f; }
+  .badge.failed { background: #7a2f2f; }
+  .badge.queued { background: #555; }
+  .dur { color: var(--pico-muted-color); }
+
+  /* stage stepper */
+  .steps { display: flex; align-items: center; gap: .4rem; margin: .8rem 0 .3rem;
+    font-size: .72rem; color: var(--pico-muted-color); }
+  .step { display: flex; align-items: center; gap: .3rem;
+    padding: .18rem .55rem; border-radius: 999px;
+    border: 1px solid var(--pico-muted-border-color); opacity: .45; white-space: nowrap; }
+  .step.active { opacity: 1; border-color: #38b6ff; color: #cfeaff; background: #38b6ff1a; }
+  .step.done { opacity: .9; border-color: #2e6b3f; color: #b7f0c6; background: #2e6b3f1a; }
+  .sep { flex: 1; min-width: 8px; height: 1px; background: var(--pico-muted-border-color); }
+
+  /* shimmering progress bar */
+  progress.working { position: relative; overflow: hidden; }
+  progress.working::-webkit-progress-value {
+    background: linear-gradient(90deg, #31517a, #38b6ff, #7c6cff, #31517a);
+    background-size: 220% 100%; animation: slide 1.4s linear infinite; }
+  progress.working::-moz-progress-bar {
+    background: linear-gradient(90deg, #31517a, #38b6ff, #7c6cff, #31517a);
+    background-size: 220% 100%; animation: slide 1.4s linear infinite; }
+  @keyframes slide { to { background-position: -220% 0; } }
+
+  .error { color: #e08080; font-size: .88rem; margin: .4rem 0 0; }
+  audio { width: 100%; margin-top: .6rem; }
+  .row { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; flex-wrap: wrap; }
+  .row select { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
+  .row button, .row a.btn { width: auto; padding: .3rem .8rem; font-size: .8rem; margin: 0;
+    display: inline-block; }
+  .empty { color: var(--pico-muted-color); text-align: center; padding: 2.5rem 1rem; }
+  footer { text-align: center; color: var(--pico-muted-color); font-size: .78rem; padding: 2rem 0 1rem; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>📄 → 🎧 Paper Reader</h1>
+  <p>Drop a research paper below — or into <code>input/</code> — and listen to it as an MP3.</p>
+</header>
+
+<main>
+  <div id="drop">
+    <span class="big">⬇️</span>
+    Drop PDFs here, or click to browse
+    <input id="filepick" type="file" accept=".pdf" multiple hidden>
+    <progress id="uploadbar"></progress>
+  </div>
+  <section id="jobs" style="margin-top:1.5rem"><p class="empty">No papers yet.</p></section>
+</main>
+
+<footer>Runs fully on your machine — nothing leaves it.</footer>
+<div id="toast"></div>
+
+<script>
+const drop = document.getElementById('drop');
+const pick = document.getElementById('filepick');
+const upbar = document.getElementById('uploadbar');
+const STAGES = [['extracting','📄','Extract'],['narrating','✍️','Narrate'],
+                ['rendering audio','🔊','Render'],['done','✅','Done']];
+const ACTIVE = new Set(['queued','extracting','narrating','rendering audio']);
+
+drop.onclick = () => pick.click();
+pick.onchange = () => { upload(pick.files); pick.value = ''; };
+['dragover','dragleave','drop'].forEach(ev => document.addEventListener(ev, e => {
+  e.preventDefault();
+  drop.classList.toggle('over', ev === 'dragover');
+}));
+document.addEventListener('drop', e => { if (e.dataTransfer.files.length) upload(e.dataTransfer.files); });
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+function upload(files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload');
+  xhr.upload.onprogress = e => {
+    upbar.style.display = 'block';
+    if (e.lengthComputable) upbar.value = e.loaded / e.total;
+  };
+  xhr.onload = () => {
+    upbar.style.display = 'none'; upbar.value = 0;
+    if (xhr.status >= 400) {
+      let msg = 'Upload failed';
+      try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
+      toast(msg);
+    }
+    refresh();
+  };
+  xhr.onerror = () => { upbar.style.display = 'none'; toast('Upload failed'); };
+  xhr.send(fd);
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtDur = s => `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
+
+function stepper(stage) {
+  const idx = STAGES.findIndex(([s]) => s === stage);
+  const cur = stage === 'done' ? STAGES.length : idx;
+  return `<div class="steps">` + STAGES.map(([s, icon, label], i) => {
+    const cls = i < cur ? 'done' : (i === cur && ACTIVE.has(stage) ? 'active' : '');
+    return (i ? '<span class="sep"></span>' : '') +
+           `<span class="step ${cls}">${icon} ${label}</span>`;
+  }).join('') + `</div>`;
+}
+
+function card(j) {
+  const badgeCls = j.stage === 'done' ? 'done' : j.stage === 'failed' ? 'failed'
+    : j.stage === 'queued' ? 'queued' : 'working';
+  let body = `<h3>${esc(j.name)}</h3><div class="meta">
+    <span class="badge ${badgeCls}">${esc(j.stage)}</span>`;
+  if (j.detail && j.stage !== 'done') body += `<span>${esc(j.detail)}</span>`;
+  if (j.duration) body += `<span class="dur">⏱ ${fmtDur(j.duration)}</span>`;
+  body += '</div>';
+  if (j.stage !== 'failed') body += stepper(j.stage);
+  if (ACTIVE.has(j.stage) && j.stage !== 'queued')
+    body += `<progress class="working" value="${j.progress || 0}" max="100"></progress>`;
+  if (j.stage === 'failed')
+    body += `<p class="error">⚠ ${esc(j.error || 'unknown error')}</p>`;
+  if (j.stage === 'done')
+    body += `<audio controls preload="none" src="/api/audio/${encodeURIComponent(j.name)}"></audio>
+      <div class="row">
+        <label>speed <select onchange="this.closest('.card').querySelector('audio').playbackRate=+this.value">
+          <option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option>
+        </select></label>
+        <a class="btn secondary" role="button" href="/api/audio/${encodeURIComponent(j.name)}" download>download</a>
+      </div>`;
+  body += `<div class="row"><button class="secondary outline"
+    onclick="del('${encodeURIComponent(j.name)}')">delete</button></div>`;
+  return `<div class="card" data-name="${esc(j.name)}">${body}</div>`;
+}
+
+const positions = {};
+let jobsCache = [];
+
+async function refresh() {
+  let jobs;
+  try {
+    jobs = await (await fetch('/api/jobs')).json();
+  } catch { return schedule(); }
+  jobsCache = jobs;
+  const el = document.getElementById('jobs');
+  el.innerHTML = jobs.length ? jobs.map(card).join('') : '<p class="empty">No papers yet — drop one above.</p>';
+  // keep audio positions across re-renders
+  document.querySelectorAll('.card audio').forEach(a => {
+    const t = positions[a.closest('.card').dataset.name];
+    if (t && a.readyState === 0) a.addEventListener('loadedmetadata', () => a.currentTime = t);
+  });
+  schedule();
+}
+
+function schedule() {
+  const busy = jobsCache.some(j => ACTIVE.has(j.stage));
+  setTimeout(refresh, busy ? 2000 : 10000);
+}
+
+setInterval(() => {
+  document.querySelectorAll('.card audio').forEach(a =>
+    positions[a.closest('.card').dataset.name] = a.currentTime);
+}, 2000);
+
+async function del(name) {
+  if (!confirm(`Delete ${decodeURIComponent(name)} and its files?`)) return;
+  await fetch('/api/delete/' + name, {method: 'POST'});
+  refresh();
+}
+refresh();
+</script>
+</body>
+</html>
