@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -27,11 +28,15 @@ def _models_dir() -> Path:
 
 def _ensure_files() -> tuple[Path, Path]:
     paths = {}
+    models = _models_dir()
     for name, url in _MODEL_FILES.items():
-        dest = _models_dir() / name
+        dest = models / name
         if not dest.exists():
             print(f"downloading {name} ...", flush=True)
-            urllib.request.urlretrieve(url, dest)
+            tmp = dest.with_suffix(".tmp")  # partial download must not pose as the model
+            with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as w:
+                shutil.copyfileobj(r, w)  # urlretrieve has no timeout: a stall would hang forever
+            os.replace(tmp, dest)
         paths[name] = dest
     return paths["kokoro-v1.0.onnx"], paths["voices-v1.0.bin"]
 
@@ -50,7 +55,8 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _pieces(text: str, max_chars: int = 1200) -> list[str]:
-    """Split script into TTS-sized pieces at paragraph, then sentence, boundaries."""
+    """Split script into TTS-sized pieces at paragraph, then sentence, boundaries.
+    A sentence longer than the limit is hard-split — Kokoro must never get one huge ball."""
     pieces = []
     for para in re.split(r"\n\s*\n", text):
         para = para.strip()
@@ -58,6 +64,9 @@ def _pieces(text: str, max_chars: int = 1200) -> list[str]:
             continue
         current = ""
         for sentence in _SENTENCE.split(para):
+            while len(sentence) > max_chars:
+                pieces.append(current or sentence[:max_chars])
+                current, sentence = "", sentence[max_chars:]
             if len(current) + len(sentence) > max_chars and current:
                 pieces.append(current)
                 current = ""
@@ -67,10 +76,10 @@ def _pieces(text: str, max_chars: int = 1200) -> list[str]:
     return pieces
 
 
-def synthesize(script: str, out_path: str | Path, progress=None) -> float:
+def synthesize(script: str, out_path: str | Path, progress=None, voice: str | None = None) -> float:
     """Render the script to an MP3 at out_path. Returns audio duration in seconds."""
     kokoro = _load()
-    voice = os.getenv("VOICE", "af_heart")
+    voice = voice or os.getenv("VOICE", "af_heart")
     speed = float(os.getenv("SPEED", "1.1"))
 
     pieces = _pieces(script)
@@ -90,5 +99,8 @@ def synthesize(script: str, out_path: str | Path, progress=None) -> float:
     enc.set_channels(1)
     enc.set_quality(2)
     mp3 = enc.encode(pcm16.tobytes()) + enc.flush()
-    Path(out_path).write_bytes(mp3)
+    out = Path(out_path)
+    tmp = out.with_suffix(".tmp")  # crash mid-write must not leave a "finished" MP3 behind
+    tmp.write_bytes(mp3)
+    os.replace(tmp, out)
     return len(pcm16) / _SAMPLE_RATE  # speed is already baked into the samples

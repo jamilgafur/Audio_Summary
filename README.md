@@ -36,7 +36,9 @@ First run downloads ~5 GB of models into `models/` (mounted, so it happens once)
 
 ## Notes & limits
 
-- `output/<name>.script.txt` keeps the narration script: TTS failures resume cheaply, and you can read/edit the script and re-render (delete the `.mp3`, keep the `.script.txt`, rescan).
+- `output/<name>.script.txt` keeps the narration script: TTS failures resume cheaply. To re-render from the cached script, use the 🔊 re-render button in the UI. Manual path: delete the `.mp3` *and* the `.status.json`, keep the `.script.txt`, then wait for the watcher (or restart).
+- If the worker crashes mid-job (e.g. llama.cpp CUDA abort while another service holds VRAM), the job is re-queued automatically on restart — twice at most, then marked failed.
+- Two modes, picked at upload (and on re-render): **summary** (default — LLM explainer) and **verbatim** (the paper's exact words, no LLM — for auditing your own paper aloud). Switching modes regenerates the script.
 - Scanned PDFs (no text layer) are detected and fail loudly — no OCR.
 - 2-column extraction + reference-stripping are heuristics; unusual layouts may jumble.
 - The narration is an *explainer*, not a verbatim read — it can hallucinate. The PDF stays the source of truth.
@@ -45,7 +47,7 @@ First run downloads ~5 GB of models into `models/` (mounted, so it happens once)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # needs Python 3.10–3.13 (kokoro-onnx requirement)
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime deps + pytest (prod image uses requirements.txt only)
 pytest tests/ -v        # extraction tests + mocked-LLM -> real TTS -> MP3 smoke test
 NARRATE_MOCK=1 uvicorn main:app --app-dir app   # run the app without the LLM
 ```

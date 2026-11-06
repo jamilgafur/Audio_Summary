@@ -1,0 +1,3 @@
+# Dev/test dependencies. Production image installs requirements.txt only.
+-r requirements.txt
+pytest>=8.0

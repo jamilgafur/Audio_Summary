@@ -16,6 +16,7 @@
     background: var(--grad); -webkit-background-clip: text; background-clip: text;
     color: transparent; }
   .hero p { color: var(--pico-muted-color); margin: 0; }
+  .hero a { font-size: .85rem; }
 
   /* drop zone */
   #drop {
@@ -28,6 +29,10 @@
   #drop.over { border-color: #38b6ff; color: #38b6ff; transform: scale(1.01);
     box-shadow: 0 0 32px #38b6ff33; }
   #uploadbar { margin-top: 1rem; display: none; }
+  #voice { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
+
+  /* search */
+  #search { margin-top: 1rem; }
 
   /* toast */
   #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%);
@@ -35,10 +40,20 @@
     font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 9; }
   #toast.show { opacity: 1; }
 
+  /* group headings */
+  .group { margin: 1.75rem 0 .9rem; font-size: .8rem; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--pico-muted-color); }
+  .group .total { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  details.groupbox summary { cursor: pointer; margin: 1.75rem 0 .9rem;
+    font-size: .8rem; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--pico-muted-color); }
+  details.groupbox .card { opacity: .75; }
+
   /* job cards */
   .card { border: 1px solid var(--pico-muted-border-color); border-radius: 14px;
     padding: 1.1rem 1.25rem; margin-bottom: 1rem; background: #ffffff08; }
   .card h3 { margin: 0 0 .5rem; font-size: 1.02rem; word-break: break-word; }
+  .fname { font-size: .75rem; color: var(--pico-muted-color); }
   .meta { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap;
     color: var(--pico-muted-color); font-size: .85rem; }
   .badge { border-radius: 999px; padding: .12rem .65rem; font-size: .72rem;
@@ -47,7 +62,13 @@
   .badge.done { background: #2e6b3f; }
   .badge.failed { background: #7a2f2f; }
   .badge.queued { background: #555; }
+  .badge.tag { background: #4a3f6b; cursor: pointer; }
+  .tagsrow { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }
+  .tagsrow:empty { display: none; }
   .dur { color: var(--pico-muted-color); }
+  .sum { font-size: .85rem; color: var(--pico-muted-color); margin: .5rem 0 0; }
+  details.sandbox { margin-top: .5rem; font-size: .85rem; }
+  details.sandbox summary { color: var(--pico-muted-color); cursor: pointer; }
 
   /* stage stepper */
   .steps { display: flex; align-items: center; gap: .4rem; margin: .8rem 0 .3rem;
@@ -75,6 +96,19 @@
   .row select { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
   .row button, .row a.btn { width: auto; padding: .3rem .8rem; font-size: .8rem; margin: 0;
     display: inline-block; }
+  /* read & listen viewer: lives outside #jobs so polling never reloads the PDF */
+  #viewer { margin-top: 1rem; }
+  #viewer .vhead { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  #viewer .vhead strong { word-break: break-word; }
+  #viewer .split { display: flex; gap: 1rem; margin-top: .5rem; }
+  #vpdf { flex: 3 1 0; height: 82vh; background: #fff;
+    border: 1px solid var(--pico-muted-border-color); border-radius: 10px; }
+  #viewer .side { flex: 2 1 240px; min-width: 210px; }
+  @media (max-width: 700px) {
+    #viewer .split { flex-direction: column; }
+    #vpdf { height: 65vh; }
+  }
+
   .empty { color: var(--pico-muted-color); text-align: center; padding: 2.5rem 1rem; }
   footer { text-align: center; color: var(--pico-muted-color); font-size: .78rem; padding: 2rem 0 1rem; }
 </style>
@@ -82,7 +116,9 @@
 <body>
 <header class="hero">
   <h1>📄 → 🎧 Paper Reader</h1>
-  <p>Drop a research paper below — or into <code>input/</code> — and listen to it as an MP3.</p>
+  <p>Drop a research paper below — or into <code>input/</code> — and listen to it as an MP3.<br>
+  <a href="/feed.xml">📡 RSS podcast feed</a> <button id="copyfeed" class="secondary" style="width:auto;padding:.15rem .6rem;font-size:.75rem;margin:0">copy URL</button>
+  — point any podcast app (or Audiobookshelf) at it.</p>
 </header>
 
 <main>
@@ -91,8 +127,43 @@
     Drop PDFs here, or click to browse
     <input id="filepick" type="file" accept=".pdf" multiple hidden>
     <progress id="uploadbar"></progress>
+    <div class="row" style="justify-content:center">
+      <label>voice
+        <select id="voice">
+          <option value="af_heart">♀ heart (default)</option>
+          <option value="af_bella">♀ bella</option>
+          <option value="af_nova">♀ nova</option>
+          <option value="af_sky">♀ sky</option>
+          <option value="am_adam">♂ adam</option>
+          <option value="am_michael">♂ michael</option>
+          <option value="am_onyx">♂ onyx</option>
+          <option value="bf_emma">♀ emma (brit)</option>
+          <option value="bf_lily">♀ lily (brit)</option>
+          <option value="bm_george">♂ george (brit)</option>
+          <option value="bm_lewis">♂ lewis (brit)</option>
+        </select>
+      </label>
+      <label>mode
+        <select id="mode">
+          <option value="summary">✍ summary (explained)</option>
+          <option value="verbatim">📖 verbatim (exact words)</option>
+        </select>
+      </label>
+      <span style="font-size:.75rem">voice &amp; mode apply to new uploads and re-renders</span>
+    </div>
   </div>
-  <section id="jobs" style="margin-top:1.5rem"><p class="empty">No papers yet.</p></section>
+  <input id="search" type="search" placeholder="🔍 search title, authors, tags…">
+  <section id="viewer" hidden>
+    <div class="vhead">
+      <strong id="vtitle"></strong>
+      <button id="vclose" class="secondary">✕ close</button>
+    </div>
+    <div class="split">
+      <iframe id="vpdf" title="PDF"></iframe>
+      <div class="side"><audio id="vaudio" controls></audio></div>
+    </div>
+  </section>
+  <section id="jobs" style="margin-top:1rem"><p class="empty">No papers yet.</p></section>
 </main>
 
 <footer>Runs fully on your machine — nothing leaves it.</footer>
@@ -102,11 +173,28 @@
 const drop = document.getElementById('drop');
 const pick = document.getElementById('filepick');
 const upbar = document.getElementById('uploadbar');
+const voiceSel = document.getElementById('voice');
+const modeSel = document.getElementById('mode');
+const searchBox = document.getElementById('search');
 const STAGES = [['extracting','📄','Extract'],['narrating','✍️','Narrate'],
                 ['rendering audio','🔊','Render'],['done','✅','Done']];
 const ACTIVE = new Set(['queued','extracting','narrating','rendering audio']);
 
-drop.onclick = () => pick.click();
+voiceSel.value = localStorage.getItem('pr-voice') || 'af_heart';
+voiceSel.onchange = () => localStorage.setItem('pr-voice', voiceSel.value);
+modeSel.value = localStorage.getItem('pr-mode') || 'summary';
+modeSel.onchange = () => localStorage.setItem('pr-mode', modeSel.value);
+searchBox.oninput = () => render();
+
+document.getElementById('copyfeed').onclick = e => {
+  e.preventDefault();
+  const url = location.origin + '/feed.xml';
+  navigator.clipboard
+    ? navigator.clipboard.writeText(url).then(() => toast('RSS URL copied'), () => toast(url))
+    : toast(url);  // clipboard API needs a secure context; toast the URL as fallback
+};
+
+drop.onclick = e => { if (!e.target.closest('select,label')) pick.click(); };
 pick.onchange = () => { upload(pick.files); pick.value = ''; };
 ['dragover','dragleave','drop'].forEach(ev => document.addEventListener(ev, e => {
   e.preventDefault();
@@ -125,6 +213,8 @@ function upload(files) {
   if (!files.length) return;
   const fd = new FormData();
   for (const f of files) fd.append('files', f);
+  fd.append('voice', voiceSel.value);
+  fd.append('mode', modeSel.value);
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/upload');
   xhr.upload.onprogress = e => {
@@ -147,6 +237,12 @@ function upload(files) {
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmtDur = s => `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
 
+/* playback positions survive page reloads */
+const pos = {
+  get: n => +localStorage.getItem('pr-pos:' + n) || 0,
+  set: (n, t) => localStorage.setItem('pr-pos:' + n, t),
+};
+
 function stepper(stage) {
   const idx = STAGES.findIndex(([s]) => s === stage);
   const cur = stage === 'done' ? STAGES.length : idx;
@@ -157,48 +253,170 @@ function stepper(stage) {
   }).join('') + `</div>`;
 }
 
+/* ETA from "part 3/7"-style detail + job start time */
+function eta(j) {
+  const m = /(\d+)\/(\d+)/.exec(j.detail || '');
+  if (!m || !j.started) return '';
+  const i = +m[1], n = +m[2];
+  const elapsed = Date.now() / 1000 - j.started;
+  if (!i || n <= i || elapsed < 5) return '';
+  const left = elapsed / i * (n - i);
+  return left < 45 ? ' · <1 min left' : ` · ~${Math.ceil(left / 60)} min left`;
+}
+
 function card(j) {
   const badgeCls = j.stage === 'done' ? 'done' : j.stage === 'failed' ? 'failed'
     : j.stage === 'queued' ? 'queued' : 'working';
-  let body = `<h3>${esc(j.name)}</h3><div class="meta">
+  let body = `<h3>${esc(j.title || j.name)}</h3><div class="meta">
     <span class="badge ${badgeCls}">${esc(j.stage)}</span>`;
-  if (j.detail && j.stage !== 'done') body += `<span>${esc(j.detail)}</span>`;
+  if (j.authors) body += `<span>✍ ${esc(j.authors)}</span>`;
+  if (j.title) body += `<span class="fname">📄 ${esc(j.name)}</span>`;
+  if (j.detail && j.stage !== 'done') body += `<span>${esc(j.detail)}${eta(j)}</span>`;
   if (j.duration) body += `<span class="dur">⏱ ${fmtDur(j.duration)}</span>`;
+  if (j.voice) body += `<span class="dur" title="voice used">🎙 ${esc(j.voice)}</span>`;
+  if (j.mode === 'verbatim') body += `<span class="dur" title="read exactly as written, no LLM">📖 verbatim</span>`;
   body += '</div>';
+  body += `<div class="tagsrow">` + (j.tags || []).map(t =>
+    `<span class="badge tag" title="click to search" onclick="tagSearch(this.textContent)">${esc(t)}</span>`).join('') + `</div>`;
   if (j.stage !== 'failed') body += stepper(j.stage);
   if (ACTIVE.has(j.stage) && j.stage !== 'queued')
     body += `<progress class="working" value="${j.progress || 0}" max="100"></progress>`;
   if (j.stage === 'failed')
     body += `<p class="error">⚠ ${esc(j.error || 'unknown error')}</p>`;
-  if (j.stage === 'done')
+  if (j.stage === 'done' && !j.archived)  // /api/audio serves output/ only
     body += `<audio controls preload="none" src="/api/audio/${encodeURIComponent(j.name)}"></audio>
       <div class="row">
-        <label>speed <select onchange="this.closest('.card').querySelector('audio').playbackRate=+this.value">
+        <label>speed <select onchange="setRate(this)">
           <option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option>
         </select></label>
-        <a class="btn secondary" role="button" href="/api/audio/${encodeURIComponent(j.name)}" download>download</a>
-      </div>`;
-  body += `<div class="row"><button class="secondary outline"
-    onclick="del('${encodeURIComponent(j.name)}')">delete</button></div>`;
+        <a class="btn secondary" role="button" href="/api/audio/${encodeURIComponent(j.name)}?dl=1">⬇ download</a>
+      </div>
+      <details class="sandbox" ontoggle="loadSum(this)"><summary>script</summary><p class="sum"></p></details>`;
   return `<div class="card" data-name="${esc(j.name)}">${body}</div>`;
 }
 
-const positions = {};
+/* first sentences of the narration script, fetched on demand */
+async function loadSum(d) {
+  if (d.dataset.loaded || !d.open) return;
+  const p = d.querySelector('.sum');
+  const name = d.closest('.card').dataset.name;
+  try {
+    const t = await (await fetch('/api/script/' + encodeURIComponent(name))).text();
+    const paras = t.split(/\n\s*\n/).slice(1).join(' ') || t;  // skip "You're listening to…"
+    p.textContent = paras.split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') || '(empty script)';
+  } catch { p.textContent = '(summary unavailable)'; }
+  d.dataset.loaded = 1;
+}
+
+function buttons(j) {
+  const enc = encodeURIComponent(j.name);
+  let b = '<div class="row">';
+  if (j.stage === 'failed')
+    b += `<button class="secondary" onclick="retry('${enc}')">↻ retry</button>`;
+  if (j.stage === 'done' && !j.archived)
+    b += `<button class="secondary" title="read the PDF while listening"
+       onclick="viewPdf('${enc}')">📖 read &amp; listen</button>`;
+  if (j.stage === 'done' && !j.archived)
+    b += `<button class="secondary" title="re-run TTS with the voice selected above (script is cached)"
+       onclick="rerender('${enc}')">🔊 re-render</button>`;
+  if (j.stage === 'done' && !j.archived)
+    b += `<button class="secondary" onclick="arch('${enc}', false)">🗃 archive</button>`;
+  if (j.archived)
+    b += `<button class="secondary" onclick="arch('${enc}', true)">🗂 unarchive</button>`;
+  if (!ACTIVE.has(j.stage))  // server 409s these while the worker owns the job
+    b += `<button class="secondary" onclick="editMeta('${enc}', 'tags')">🏷 tags</button>
+      <button class="secondary" onclick="editMeta('${enc}', 'title')">✏️ rename</button>
+      <button class="secondary outline" onclick="del('${enc}')">✕ delete</button>`;
+  return b + '</div>';
+}
+
 let jobsCache = [];
 
-async function refresh() {
-  let jobs;
-  try {
-    jobs = await (await fetch('/api/jobs')).json();
-  } catch { return schedule(); }
-  jobsCache = jobs;
-  const el = document.getElementById('jobs');
-  el.innerHTML = jobs.length ? jobs.map(card).join('') : '<p class="empty">No papers yet — drop one above.</p>';
-  // keep audio positions across re-renders
+function tagSearch(t) {
+  searchBox.value = t;
+  render();
+}
+
+/* speed persists per card across re-renders and reloads */
+function setRate(sel) {
+  const card = sel.closest('.card');
+  card.querySelector('audio').playbackRate = +sel.value;
+  localStorage.setItem('pr-rate:' + card.dataset.name, sel.value);
+}
+
+function applyRate(a) {
+  const card = a.closest('.card');
+  const name = card.dataset.name;
+  const r = localStorage.getItem('pr-rate:' + name);
+  const sel = card.querySelector('.row select');
+  if (r) {
+    a.defaultPlaybackRate = +r; a.playbackRate = +r;
+    if (sel && [...sel.options].some(o => o.value === r)) sel.value = r;
+  }
+}
+
+/* poll re-renders the DOM: snapshot audio state first so playback survives */
+function snapshotAudio() {
+  const m = {};
   document.querySelectorAll('.card audio').forEach(a => {
-    const t = positions[a.closest('.card').dataset.name];
-    if (t && a.readyState === 0) a.addEventListener('loadedmetadata', () => a.currentTime = t);
+    const n = a.closest('.card').dataset.name;
+    m[n] = { t: a.currentTime, paused: a.paused, rate: a.playbackRate };
   });
+  return m;
+}
+
+function restoreAudio(snap) {
+  document.querySelectorAll('.card audio').forEach(a => {
+    const name = a.closest('.card').dataset.name;
+    const s = snap[name];
+    const t = s ? s.t : pos.get(name);
+    if (t) a.addEventListener('loadedmetadata', () => a.currentTime = t);
+    applyRate(a);
+    if (s && !s.paused) a.play().catch(() => {});  // autoplay policy may refuse; position still kept
+    a.addEventListener('ended', () => pos.set(name, 0));
+  });
+}
+
+function matches(j, needle) {
+  return [j.title, j.name, j.authors, ...(j.tags || [])].join(' ').toLowerCase().includes(needle);
+}
+
+function render() {
+  const snap = snapshotAudio();
+  const needle = searchBox.value.trim().toLowerCase();
+  const jobs = needle ? jobsCache.filter(j => matches(j, needle)) : jobsCache;
+  const queue = jobs.filter(j => !j.archived && j.stage !== 'done');
+  const lib   = jobs.filter(j => !j.archived && j.stage === 'done')
+                    .sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  const arch  = jobs.filter(j =>  j.archived);
+  const el = document.getElementById('jobs');
+  if (!jobsCache.length) {
+    el.innerHTML = '<p class="empty">No papers yet — drop one above.</p>';
+  } else if (!jobs.length) {
+    el.innerHTML = `<p class="empty">No matches for “${esc(needle)}”.</p>`;
+  } else {
+    let html = '';
+    if (queue.length)
+      html += `<p class="group">⏳ Queue (${queue.length})</p>` + queue.map(j => card(j) + buttons(j)).join('');
+    if (lib.length) {
+      const secs = lib.reduce((s, j) => s + (j.duration || 0), 0);
+      const h = Math.floor(secs / 3600), m = Math.round(secs % 3600 / 60);
+      const total = secs ? ` <span class="total">— ${h ? h + 'h ' : ''}${m}m of audio</span>` : '';
+      html += `<p class="group">🎧 Library (${lib.length})${total}</p>` + lib.map(j => card(j) + buttons(j)).join('');
+    }
+    if (arch.length)
+      html += `<details class="groupbox"><summary>🗃 Archived (${arch.length})</summary>` +
+              arch.map(j => card(j) + buttons(j)).join('') + '</details>';
+    el.innerHTML = html;
+  }
+  restoreAudio(snap);
+}
+
+async function refresh() {
+  try {
+    jobsCache = await (await fetch('/api/jobs')).json();
+  } catch { return schedule(); }
+  render();
   schedule();
 }
 
@@ -209,12 +427,80 @@ function schedule() {
 
 setInterval(() => {
   document.querySelectorAll('.card audio').forEach(a =>
-    positions[a.closest('.card').dataset.name] = a.currentTime);
+    pos.set(a.closest('.card').dataset.name, a.currentTime));
+  if (!viewer.hidden && viewer.dataset.name) pos.set(viewer.dataset.name, vaudio.currentTime);
 }, 2000);
+
+/* viewer: open the PDF beside its audio, resuming where the card player left off */
+const viewer = document.getElementById('viewer');
+const vpdf = document.getElementById('vpdf');
+const vaudio = document.getElementById('vaudio');
+
+function viewPdf(name) {
+  const j = jobsCache.find(x => x.name === decodeURIComponent(name)) || {};
+  viewer.dataset.name = j.name;
+  document.getElementById('vtitle').textContent = j.title || j.name || '';
+  vpdf.src = '/api/pdf/' + name;
+  vaudio.src = '/api/audio/' + name;
+  const t = pos.get(j.name);
+  if (t) vaudio.addEventListener('loadedmetadata', () => vaudio.currentTime = t, {once: true});
+  viewer.hidden = false;
+  viewer.scrollIntoView({behavior: 'smooth'});
+  vaudio.play().catch(() => {});  // user clicked; usually allowed, ignore policy refusals
+}
+
+document.getElementById('vclose').onclick = () => {
+  vaudio.pause();
+  if (viewer.dataset.name) pos.set(viewer.dataset.name, vaudio.currentTime);
+  vaudio.removeAttribute('src'); vaudio.load();
+  vpdf.src = 'about:blank';
+  viewer.hidden = true;
+  viewer.dataset.name = '';
+};
 
 async function del(name) {
   if (!confirm(`Delete ${decodeURIComponent(name)} and its files?`)) return;
   await fetch('/api/delete/' + name, {method: 'POST'});
+  refresh();
+}
+
+async function arch(name, undo) {
+  await fetch('/api/archive/' + name + (undo ? '?undo=1' : ''), {method: 'POST'});
+  refresh();
+}
+
+async function retry(name) {
+  await fetch('/api/retry/' + name, {method: 'POST'});
+  refresh();
+}
+
+async function rerender(name) {
+  const j = jobsCache.find(x => x.name === decodeURIComponent(name)) || {};
+  const modeChange = (j.mode || 'summary') !== modeSel.value;
+  const note = modeChange
+    ? `\nmode: ${j.mode || 'summary'} → ${modeSel.value} — the script will be regenerated${modeSel.value === 'summary' ? ' (LLM re-run, a few minutes)' : ''}`
+    : '\n(narration script is cached — only the audio is re-made)';
+  if (!confirm(`Re-render "${decodeURIComponent(name)}" with voice "${voiceSel.value}"?${note}`)) return;
+  const r = await fetch(`/api/rerender/${name}?voice=${encodeURIComponent(voiceSel.value)}&mode=${encodeURIComponent(modeSel.value)}`, {method: 'POST'});
+  if (r.status >= 400) toast(JSON.parse(await r.text()).detail || 'Re-render failed');
+  refresh();
+}
+
+async function editMeta(name, field) {
+  const cur = jobsCache.find(x => x.name === decodeURIComponent(name)) || {};
+  let body;
+  if (field === 'tags') {
+    const v = prompt('Tags (comma-separated):', (cur.tags || []).join(', '));
+    if (v === null) return;
+    body = {tags: v.split(',').map(s => s.trim()).filter(Boolean)};
+  } else {
+    const v = prompt('Display title:', cur.title || cur.name || '');
+    if (v === null || !v.trim()) return;
+    body = {title: v.trim()};
+  }
+  const r = await fetch('/api/meta/' + name, {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (r.status >= 400) toast(JSON.parse(await r.text()).detail || 'Edit failed');
   refresh();
 }
 refresh();

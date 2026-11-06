@@ -1,22 +1,29 @@
 services:
   paper-reader:
+    container_name: paper-reader
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - com.centurylinklabs.watchtower.enable=false   # locally built; watchtower can't pull it
     build:
       context: .
       args:
-        # 1070 Ti = Pascal = compute capability 6.1. Drop to just "61" once you
-        # know it works; keeping 61;70;75 costs build time, nothing else.
+        # GTX 1660 Ti = Turing = compute capability 7.5
         BASE: nvidia/cuda:12.4.1-devel-ubuntu22.04
-        CMAKE_ARGS: "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=61"
+        CMAKE_ARGS: "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75"
     ports:
-      - "8000:8000"
+      - "8123:8000"   # fixed: homepage points here; 8000 belongs to lazytainer
+    user: "${UID:-1000}:${GID:-1000}"   # so output/*.mp3 aren't root-owned
     volumes:
       - ./input:/data/input
       - ./output:/data/output
       - ./models:/data/models
     environment:
+      HF_HOME: /data/models/.cache   # uid 1000 has no $HOME; HF/xet write cache here
       GGUF_REPO: bartowski/Qwen2.5-7B-Instruct-GGUF   # any instruct GGUF works; try 14B on that 48GB RAM
       GGUF_FILE: Qwen2.5-7B-Instruct-Q4_K_M.gguf
-      N_GPU_LAYERS: "-1"                              # -1: everything on the 1070 Ti; 0: CPU only
+      N_GPU_LAYERS: "12"                              # -1 OOMs; must share the 6 GB 1660 Ti with ollama/docling
+      OMP_NUM_THREADS: "2"                            # TTS render would otherwise starve the whole box
       VOICE: af_heart
       SPEED: "1.1"
     deploy:
@@ -32,3 +39,9 @@ services:
         max-size: 10m
         max-file: "3"
     restart: unless-stopped
+    networks:
+      - home-server-net
+
+networks:
+  home-server-net:
+    external: true

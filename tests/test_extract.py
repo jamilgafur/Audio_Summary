@@ -1,9 +1,11 @@
+from pathlib import Path
+
 import pymupdf  # installed as `pymupdf`, imported as `pymupdf`; fixture generation uses it too
 import pytest
 
-from app.extract import ScannedPDFError, extract
+from extract import ScannedPDFError, extract
 
-FIXTURE = "tests/fixtures/sample.pdf"
+FIXTURE = Path(__file__).parent / "fixtures" / "sample.pdf"
 
 
 def test_extract_real_paper():

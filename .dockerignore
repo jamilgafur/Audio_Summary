@@ -1,0 +1,9 @@
+.git
+.venv
+models
+input
+output
+plan.txt
+__pycache__
+.pytest_cache
+*.pyc
