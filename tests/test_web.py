@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 """Web layer: UI serving + upload validation. No LLM (mocked), no worker threads."""
 
 import json
@@ -165,6 +166,28 @@ def test_ui_served_without_tables():
     assert 'id="wsplit"' in r.text  # side-by-side read-view | editor
     assert 'class="voicesel"' in r.text  # per-paper voice in the card menu
     assert 'id="vpdf"' not in r.text  # the reader lives in its own tab now
+    assert 'id="modelsline"' in r.text  # first-run model download progress
+    assert 'data-act="sample"' in r.text  # empty-state "try the sample paper" button
+    assert "ERR_HINTS" in r.text  # failed cards show a what-to-do hint
+
+
+def test_sample_paper_served():
+    r = client.get("/static/sample-paper.txt")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert r.text.startswith("Listening to Papers")
+
+
+def test_models_status_reports_sizes_as_numbers():
+    """First-run readiness endpoint: every model file is a numeric byte count
+    (0 = not downloaded yet) so the UI can show progress."""
+    from tts import _model_name
+
+    r = client.get("/api/models-status")
+    assert r.status_code == 200
+    s = r.json()
+    assert s["gguf_file"] == os.getenv("GGUF_FILE", "Qwen2.5-7B-Instruct-Q4_K_M.gguf")
+    assert all(isinstance(s[k], int) and s[k] >= 0 for k in (_model_name(), "voices-v1.0.bin", "gguf"))
 
 
 def test_view_page_served():
@@ -514,6 +537,26 @@ def test_special_char_input_pdf_shows_one_card_under_safe_stem():
         assert "Café (draft)" not in names  # no ghost card under the raw name
     finally:
         (Path(p.input_dir) / "Café (draft).pdf").unlink(missing_ok=True)
+
+
+def test_scan_skips_unprocessable_name_but_queues_the_rest():
+    """One unnameable file ('!!!.pdf') must not stall the watcher's scan of the rest."""
+    import main
+
+    p = main.pipeline
+    inp = Path(p.input_dir)
+    (inp / "!!!.pdf").write_bytes(b"%PDF-1.4 fake")
+    (inp / "scan-ok.pdf").write_bytes(b"%PDF-1.4 fake")
+    try:
+        p.scan()  # would raise HTTPException before the per-file guard
+        queued = [f.name for f in list(p.q.queue)]
+        assert "scan-ok.pdf" in queued  # the good file still got picked up
+    finally:
+        while not p.q.empty():
+            p.q.get_nowait()
+        (inp / "!!!.pdf").unlink(missing_ok=True)
+        (inp / "scan-ok.pdf").unlink(missing_ok=True)
+        p.status_path("scan-ok").unlink(missing_ok=True)
 
 
 def test_archive_roundtrip():

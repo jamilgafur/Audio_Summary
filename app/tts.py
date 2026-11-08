@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 """Narration script -> MP3 via Kokoro TTS (CPU, onnxruntime) + lameenc."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 # Base is a build arg so one file serves both worlds:
 #   docker compose build                      -> CUDA devel image (compiles llama.cpp for your GPU)
 #   docker build --build-arg BASE=python:3.12-slim --build-arg CMAKE_ARGS="" .  -> small CPU image
@@ -20,12 +21,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # llama.cpp: CUDA build compiles from source (10-ish min, arch-pinned by compose);
 # CPU build grabs a prebuilt wheel and falls back to a source build if unavailable.
+# Pinned for reproducible builds; the pinned version is covered by pip-audit in CI
+# via requirements-audit.txt (it is intentionally NOT in requirements.txt so host
+# test venvs stay light).
 RUN if [ -n "$CMAKE_ARGS" ]; then \
-      CMAKE_ARGS="$CMAKE_ARGS" pip install --no-cache-dir --no-binary llama-cpp-python "llama-cpp-python>=0.2.90"; \
+      CMAKE_ARGS="$CMAKE_ARGS" pip install --no-cache-dir --no-binary llama-cpp-python "llama-cpp-python==0.3.36"; \
     else \
-      pip install --no-cache-dir "llama-cpp-python>=0.2.90" \
+      pip install --no-cache-dir "llama-cpp-python==0.3.36" \
         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
-      || pip install --no-cache-dir "llama-cpp-python>=0.2.90"; \
+      || pip install --no-cache-dir "llama-cpp-python==0.3.36"; \
     fi
 
 COPY app/ ./app/

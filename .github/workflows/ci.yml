@@ -53,7 +53,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pip-audit
-      - run: pip-audit -r requirements.txt -r requirements-dev.txt
+      - run: pip-audit -r requirements.txt -r requirements-dev.txt -r requirements-audit.txt
 
   js-check:
     runs-on: ubuntu-latest

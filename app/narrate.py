@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 """Turn extracted paper text into a spoken narration script via a local GGUF LLM.
 
 The LLM runs in a spawned child process: llama.cpp hard-aborts mid-job (ggml_abort

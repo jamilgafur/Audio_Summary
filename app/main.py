@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 """FastAPI app: folder watcher + pipeline worker + tiny web UI."""
 
 from __future__ import annotations
@@ -265,7 +266,10 @@ class Pipeline:
 
     def scan(self):
         for src in self._input_sources():
-            stem = _safe(src.name)
+            try:
+                stem = _safe(src.name)
+            except HTTPException:
+                continue  # unprocessable name ("!!!.pdf") — one bad file must not stall the rest of the scan
             if self.mp3(stem).exists() or self.status_path(stem).exists():
                 continue
             self.set_status(stem, "queued")
@@ -428,6 +432,37 @@ _sample_lock = threading.Lock()
 
 
 _IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}  # content-addressed audio
+
+
+@app.get("/api/models-status")
+def models_status():
+    """First-run readiness: which model files exist, or are being downloaded
+    (partial-download size) — the UI shows progress until everything is in place."""
+    from tts import _model_name
+
+    m = Path(os.getenv("MODELS_DIR", "./models"))
+
+    def ready(p: Path) -> int:
+        """Final file size, else its partial download's, else 0."""
+        if p.exists():
+            return p.stat().st_size
+        tmp = p.with_suffix(".tmp")  # tts.py's partial-download name
+        return tmp.stat().st_size if tmp.exists() else 0
+
+    gguf = m / os.getenv("GGUF_FILE", "Qwen2.5-7B-Instruct-Q4_K_M.gguf")
+    if gguf.exists():
+        gguf_size = gguf.stat().st_size
+    else:
+        # hf_hub_download streams to models/.cache/huggingface/download/*.incomplete first
+        hf_tmp = m / ".cache" / "huggingface" / "download"
+        gguf_size = sum(f.stat().st_size for f in hf_tmp.glob("*.incomplete")) if hf_tmp.is_dir() else 0
+
+    return {
+        _model_name(): ready(m / _model_name()),
+        "voices-v1.0.bin": ready(m / "voices-v1.0.bin"),
+        "gguf": gguf_size,
+        "gguf_file": gguf.name,
+    }
 
 
 @app.get("/api/voice-sample/{voice}")

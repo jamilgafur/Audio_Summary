@@ -1,3 +1,4 @@
+<!-- BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0) -->
 <!doctype html>
 <html lang="en" data-theme="dark">
 <head>
@@ -123,6 +124,8 @@
   @keyframes slide { to { background-position: -220% 0; } }
 
   .error { color: #e08080; font-size: .88rem; margin: .4rem 0 0; }
+  .error .hint { display: block; color: var(--pico-muted-color); margin-top: .25rem; font-size: .82rem; }
+  #modelsline { margin: .5rem 0 0; font-size: .82rem; color: var(--pico-muted-color); }
   audio { width: 100%; margin-top: .6rem; }
   .row { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; flex-wrap: wrap; }
   .row select { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
@@ -222,6 +225,7 @@
       <progress id="uploadbar"></progress>
       <div class="defaults" id="defaultsline"></div>
     </div>
+    <div id="modelsline" hidden></div>
     <div class="row urlrow">
       <input id="urlbox" type="url" placeholder="…or paste an arXiv / PDF link" aria-label="arXiv or PDF URL">
       <button id="urlgo" class="secondary mini">fetch</button>
@@ -722,6 +726,18 @@ const isUnlistened = j => j.stage === 'done' && !j.archived && !pos.get(j.name);
 const delLabel = name => delPending.has(name) ? '⚠ confirm delete?' : '✕ delete';
 const delCls = name => delPending.has(name) ? ' danger' : '';
 
+/* known failure → what to do about it (raw error still shown above the hint) */
+const ERR_HINTS = [
+  [/not enough readable text|scanned|no text layer/i,
+   'Scanned PDF (no text layer) or a very short file — no OCR by design. Re-export with a text layer, or upload the .txt version.'],
+  [/cuda|cublas|out of memory|vram|no gpu/i,
+   'GPU hiccup (VRAM shared with other services). It auto-retried on CPU — if it keeps failing, lower N_GPU_LAYERS.'],
+  [/timed? ?out|temporarily unavailable|connection/i,
+   'A network fetch or model download stalled — check the connection and hit ↻ retry.'],
+  [/invalid filename/i, 'Rename the file — that name has no usable characters.'],
+];
+const errHint = e => { for (const [re, h] of ERR_HINTS) if (re.test(e || '')) return h; return ''; };
+
 function voiceOpts(sel) {  // clone the Voices-tab options, marking the active one
   return [...$('voice').options].map(o =>
     `<option value="${o.value}"${o.value === sel ? ' selected' : ''}>${o.textContent}</option>`).join('');
@@ -780,8 +796,10 @@ function card(j) {
   if (j.stage !== 'failed') body += stepper(j.stage);
   if (ACTIVE.has(j.stage) && j.stage !== 'queued')
     body += `<progress class="working" value="${j.progress || 0}" max="100"></progress>`;
-  if (j.stage === 'failed')
-    body += `<p class="error">⚠ ${esc(j.error || 'unknown error')}</p>`;
+  if (j.stage === 'failed') {
+    const h = errHint(j.error);
+    body += `<p class="error">⚠ ${esc(j.error || 'unknown error')}${h ? `<span class="hint">${h}</span>` : ''}</p>`;
+  }
   if (canView) {
     const heard = pos.get(j.name);
     if (heard && j.duration && heard / j.duration >= 0.01)
@@ -818,7 +836,15 @@ function doAct(act, name, btn) {
     case 'tags':      startEdit(name, 'tags'); break;
     case 'filter':    activeFilter = activeFilter === btn.dataset.tag ? null : btn.dataset.tag; render(); break;
     case 'playlist':  togglePlaylist(); break;
+    case 'sample':    uploadSample(); break;
   }
+}
+
+async function uploadSample() {
+  try {
+    const text = await (await fetch('/static/sample-paper.txt')).text();
+    upload([new File([text], 'sample-paper.txt', {type: 'text/plain'})]);  // uses current voice/mode defaults
+  } catch { toast('Sample unavailable', true); }
 }
 
 async function arch(name, undo) {
@@ -1070,7 +1096,8 @@ function render() {
   renderedLib = lib.map(j => j.name);
   const arch = jobs.filter(j => j.archived);
   if (!jobsCache.length) {
-    jobsEl.innerHTML = '<p class="empty">No papers yet — drop one above.</p>';
+    jobsEl.innerHTML = '<p class="empty">No papers yet — drop one above, or</p>'
+      + '<div style="text-align:center"><button class="mini secondary" data-act="sample">⚡ try the sample paper</button></div>';
   } else if (!jobs.length) {
     jobsEl.innerHTML = `<p class="empty">No matches${needle ? ` for “${esc(needle)}”` : ''}.</p>`;
   } else {
@@ -1116,7 +1143,21 @@ async function refresh() {
   fresh.forEach(j => { prevStages[j.name] = j.stage; });
   jobsCache = fresh;
   render();
+  if (modelsReady !== true) modelsCheck();  // first-run download progress until everything's in place
   schedule();
+}
+
+let modelsReady = null;
+async function modelsCheck() {
+  let s;
+  try { s = await (await fetch('/api/models-status')).json(); } catch { return; }
+  const missing = Object.entries(s).filter(([k, v]) => typeof v === 'number' && !v)
+    .map(([k]) => k === 'gguf' ? s.gguf_file : k);
+  const el = $('modelsline');
+  if (!missing.length) { modelsReady = true; el.hidden = true; return; }
+  el.hidden = false;
+  const prog = s.gguf > 1048576 ? ` — ${(s.gguf / 1073741824).toFixed(1)} GB so far` : '';
+  el.textContent = '⬇ First run: ' + missing.join(' + ') + prog + ' will download into models/ on the first job.';
 }
 function schedule() {
   const busy = jobsCache.some(j => ACTIVE.has(j.stage));
@@ -1135,7 +1176,7 @@ jobsEl.addEventListener('click', e => {
   e.preventDefault();
   const act = btn.dataset.act;
   const name = btn.closest('[data-name]')?.dataset.name;
-  if (!name && act !== 'playlist') return;  // playlist button lives in the group header
+  if (!name && act !== 'playlist' && act !== 'sample') return;  // those buttons live outside cards
   if (act !== 'delete') {  // delete stays open so the second tap lands on it
     const m = btn.closest('details.menu');
     if (m) m.open = false;

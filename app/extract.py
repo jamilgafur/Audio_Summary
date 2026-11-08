@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 """Extract clean, narration-friendly text from a paper: PDF, .txt, .tex, or .docx."""
 
 from __future__ import annotations

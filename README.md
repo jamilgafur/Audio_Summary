@@ -15,6 +15,7 @@ Everything runs on your machine: **nothing leaves it.** No API keys, no cloud, n
 - **Per-paper voice** — every paper carries its own voice; change it from the card menu or the reader tab and only the audio re-renders (a per-piece TTS cache means small edits re-render in seconds).
 - **Podcast feeds** — point any podcast app (or Audiobookshelf) at the base feed or one filtered by tag.
 - **Fast by construction** — every rendered sentence is disk-cached by content; repeated listens are instant, and re-renders after a one-sentence edit touch one piece, not the whole file.
+- **First-run onboarding** — while models are missing, the Library shows what is downloading and how far along it is; an empty library offers a one-click sample paper that runs the whole pipeline; failed cards say what to do about the failure (scanned PDF, VRAM, network).
 
 ## How it works
 
@@ -142,8 +143,7 @@ docker-compose.yml
 
 The backlog is tracked in [issues](https://github.com/jamilgafur/Audio_Summary/issues) — the short list of things that would actually help:
 
-- per-file resilience in the folder watcher (one bad filename shouldn't stop the watch)
-- body-size cap on the script-edit endpoint and IP allowlisting on the URL-fetch endpoint (for anyone exposing the app beyond a trusted LAN)
+- IP allowlisting on the URL-fetch endpoint (for anyone exposing the app beyond a trusted LAN — see SECURITY.md)
 - word-level (vs sentence-level) follow-along — needs phoneme timing Kokoro doesn't currently expose
 - OCR for scanned PDFs
 

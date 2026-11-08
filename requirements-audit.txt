@@ -1,0 +1,4 @@
+# NOT a requirements file — nothing installs from it. CI's pip-audit reads it
+# to cover llama-cpp-python, which the Dockerfile installs separately (see
+# requirements.txt) and is pinned there; keep the pin in sync.
+llama-cpp-python==0.3.36

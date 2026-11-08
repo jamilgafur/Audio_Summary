@@ -1,3 +1,4 @@
+# BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
 """End-to-end smoke test: PDF -> (mocked LLM) -> real Kokoro TTS -> real MP3."""
 
 import json

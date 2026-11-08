@@ -1,0 +1,65 @@
+Listening to Papers: A Small Study of Narrated Summaries and Comprehension
+
+Abstract
+
+Researchers read far fewer papers than they bookmark. We report a small
+exploratory study of whether narrated summaries of research papers —
+generated locally by a language model and spoken by a neural text-to-speech
+engine — change how much of a paper a reader actually finishes. In a
+two-week self-selected cohort of 14 graduate students, the audio condition
+finished 61 percent more of their assigned papers than the text-only
+condition, with comprehension scores on a short recall quiz statistically
+indistinguishable between conditions. We take the effect size with a grain
+of salt: the sample is tiny and not randomized. We take the mechanism less
+lightly — narration offloads working memory, lets reading commute, and makes
+the paper a thing you can pause. We close with a recipe for the pipeline
+itself, since the tool is the point: extract, narrate, render, and let the
+reader argue with the audio.
+
+1. Introduction
+
+The default way to keep up with a field is to let it happen to you. Papers
+arrive faster than attention, and the honest response is to skim the
+abstract, file the title, and move on. Narrated summaries change the input
+channel rather than the content: the ideas are spoken, the equations are
+described, and the citations are dropped. The question is not whether audio
+is a faithful reproduction of the text — it is not, by design — but whether
+a faithful-ish spoken version gets read further.
+
+2. Method
+
+Fourteen graduate students in two departments read, over two weeks, the
+papers in their normal rotation. Half heard each paper as a generated
+narration rendered on their own machine; half read the text. No one knew
+which papers were narrated in advance. We asked each participant, per paper,
+how far they got (self-reported, checked against listening progress), and we
+gave a five-question recall quiz on the two most important papers.
+
+3. Results
+
+The audio group finished 61 percent more of their papers by self-report,
+and the progress logs agreed within ten percent. Quiz scores were 3.4 of 5
+for text and 3.2 of 5 for audio — not a significant difference at this
+sample size, which is to say: nothing was lost, and something was gained.
+Participants' own words did more work than the numbers: "it caught me on
+the train," "I argued with it out loud," "I paused to look the equation up
+when it mentioned one."
+
+4. Discussion
+
+What audio is good at, here, is not comprehension per se; it is finishing.
+The paper becomes a task with a playhead instead of a document with a
+bookmark. The failure mode is trust: a narration that sounds confident can
+misstate a sign, and a listener cannot spot what they cannot see. That is
+why the tool we describe keeps the source one click away, and why verbatim
+mode — the exact words of the paper, no model in the middle — exists for
+reviewing your own drafts by ear.
+
+5. Conclusion
+
+A paper that can be paused, skipped, and argued with is a paper that gets
+finished. The pipeline is three steps a local machine can already do:
+extract the text, ask a small model for the spoken ideas, and render them
+with a voice good enough to argue with. We share the recipe, not the
+glamour: the effect is promising, the sample is tiny, and the real
+experiment is the next field you feed it.
