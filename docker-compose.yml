@@ -12,9 +12,10 @@ services:
         BASE: nvidia/cuda:12.4.1-devel-ubuntu22.04
         CMAKE_ARGS: "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75"
     ports:
-      - "8123:8000"   # fixed: homepage points here; 8000 belongs to lazytainer
+      - "8123:8000"   # non-default on purpose: change the left side if 8123 is taken
     user: "${UID:-1000}:${GID:-1000}"   # so output/*.mp3 aren't root-owned
     volumes:
+      - ./app:/srv/app:ro   # live code/UI: edit + refresh, no rebuild (restart for .py changes)
       - ./input:/data/input
       - ./output:/data/output
       - ./models:/data/models
@@ -22,7 +23,7 @@ services:
       HF_HOME: /data/models/.cache   # uid 1000 has no $HOME; HF/xet write cache here
       GGUF_REPO: bartowski/Qwen2.5-7B-Instruct-GGUF   # any instruct GGUF works; try 14B on that 48GB RAM
       GGUF_FILE: Qwen2.5-7B-Instruct-Q4_K_M.gguf
-      N_GPU_LAYERS: "12"                              # -1 OOMs; must share the 6 GB 1660 Ti with ollama/docling
+      N_GPU_LAYERS: "12"                              # -1 OOMs on a 6 GB card shared with other GPU workloads
       OMP_NUM_THREADS: "2"                            # TTS render would otherwise starve the whole box
       VOICE: af_heart
       SPEED: "1.1"

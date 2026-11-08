@@ -1,4 +1,5 @@
 """FastAPI app: folder watcher + pipeline worker + tiny web UI."""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +10,8 @@ import shutil
 import threading
 import time
 import traceback
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from email.utils import formatdate
 from pathlib import Path
@@ -19,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from extract import ScannedPDFError, extract
+from extract import SRC_EXT, ScannedPDFError, extract
 from narrate import narrate, verbatim
 from tts import synthesize
 
@@ -40,6 +43,7 @@ def _slug(title: str) -> str:
 def _stem_of(status_file: Path) -> str:
     """'walrus.status.json' -> 'walrus'."""
     return status_file.stem[: -len(".status")]
+
 
 _STAGE_PCT = {"queued": 0, "extracting": 5, "narrating": 10, "rendering audio": 75, "done": 100}
 _ACTIVE_STAGES = {"queued", "extracting", "narrating", "rendering audio"}
@@ -86,16 +90,36 @@ class Pipeline:
     def script(self, stem: str) -> Path:
         return self.output_dir / f"{stem}.script.txt"
 
+    def follow(self, stem: str) -> Path:
+        """Sentence → time marks for the follow-along view, written at render time."""
+        return self.output_dir / f"{stem}.follow.json"
+
     def status_path(self, stem: str) -> Path:
         return self.output_dir / f"{stem}.status.json"
 
-    def find_pdf(self, stem: str) -> Path | None:
-        """A job's source PDF: input/ while it runs, output/ once done."""
-        for d in (self.input_dir, self.output_dir):
-            p = d / f"{stem}.pdf"
+    def input_source(self, stem: str) -> Path | None:
+        """The real source file behind a safe stem: a hand-dropped "Café (draft).pdf"
+        does not rebuild as "<stem>.pdf", so match on the safe stem instead."""
+        for p in sorted(self.input_dir.iterdir()):
+            if p.suffix.lower() not in SRC_EXT:
+                continue
+            try:
+                if _safe(p.name) == stem:
+                    return p
+            except HTTPException:
+                continue  # unprocessable name ("!!!.pdf") — scan() rejects it too
+        return None
+
+    def find_source(self, stem: str) -> Path | None:
+        """A job's source file: input/ while it runs, output/ once done."""
+        for ext in SRC_EXT:
+            p = self.output_dir / f"{stem}{ext}"
             if p.exists():
                 return p
-        return None
+        return self.input_source(stem)
+
+    def _input_sources(self) -> list[Path]:
+        return sorted(p for p in self.input_dir.iterdir() if p.suffix.lower() in SRC_EXT)
 
     # status ----------------------------------------------------------
     def set_status(self, stem: str, stage: str, **extra):
@@ -145,9 +169,9 @@ class Pipeline:
             stage = data.get("stage")
             if stage not in _ACTIVE_STAGES:
                 continue
-            pdf = self.find_pdf(stem)
+            pdf = self.find_source(stem)
             if pdf is None:
-                self.set_status(stem, "failed", error="source PDF missing")
+                self.set_status(stem, "failed", error="source file missing")
             elif stage == "queued":
                 self.q.put(pdf)  # only waiting in line — not a crash, spends no attempt
             elif data.get("attempts", 0) + 1 > 2:
@@ -159,8 +183,9 @@ class Pipeline:
     # full pipeline ---------------------------------------------------
     def process(self, pdf: Path):
         stem = _safe(pdf.name)
+        fmt = pdf.suffix.lstrip(".").lower()  # pdf/txt/tex/docx — the UI picks a viewer from it
         try:
-            self.set_status(stem, "extracting")
+            self.set_status(stem, "extracting", fmt=fmt)
             paper = extract(pdf)
             paper_title = paper["title"] or ""
             # A user rename (POST /api/meta) wins as the display title, but the
@@ -181,12 +206,15 @@ class Pipeline:
             else:
                 self.set_status(stem, "narrating", detail="starting", title=title, authors=authors)
                 backend_note = ""
+
                 def on_backend(mode):
                     nonlocal backend_note
                     backend_note = " · CPU fallback (VRAM busy)" if mode == "cpu-fallback" else ""
+
                 def on_narrate(i, n):
                     pct = 10 + round(65 * i / n)
                     self.set_status(stem, "narrating", progress=pct, detail=f"part {i}/{n}{backend_note}", title=title)
+
                 script = narrate(paper, progress=on_narrate, on_backend=on_backend)
                 script_path.write_text(script)
                 # the narration child process has exited by now; its VRAM is free for other services
@@ -194,25 +222,28 @@ class Pipeline:
             def on_tts(i, n):
                 pct = 75 + round(24 * i / n)
                 self.set_status(stem, "rendering audio", progress=pct, detail=f"piece {i}/{n}", title=title)
+
             voice = self.status_data(stem).get("voice")  # set at upload or re-render time
-            duration = synthesize(script, self.mp3(stem), progress=on_tts, voice=voice)
+            duration = synthesize(script, self.mp3(stem), progress=on_tts, voice=voice, marks_path=self.follow(stem))
 
             # Final artifacts are title-named and self-contained in output/:
-            # walrus-a-foundation-model.{pdf,mp3,script.txt,status.json}
+            # walrus-a-foundation-model.{<src>,mp3,script.txt,follow.json,status.json}
             slug = _slug(paper_title) or stem
             if slug != stem:
                 slug = self.free_slug(slug)  # free => no mp3/status there to stomp
                 self.mp3(stem).replace(self.mp3(slug))
                 if script_path.exists():
                     script_path.replace(self.script(slug))
+                if self.follow(stem).exists():
+                    self.follow(stem).replace(self.follow(slug))
                 self.status_path(stem).replace(self.status_path(slug))  # keep tags/voice/started
                 stem = slug
             if pdf.parent == self.input_dir and pdf.exists():
-                # done jobs keep their PDF in output/, under the safe stem — use the
+                # done jobs keep their source in output/, under the safe stem — use the
                 # real path, not a rebuilt one, or special chars in the name strand it
                 # input/ and output/ are separate mounts: rename() would hit EXDEV
-                shutil.move(pdf, self.output_dir / f"{stem}.pdf")
-            self.set_status(stem, "done", duration=round(duration), title=title)
+                shutil.move(pdf, self.output_dir / f"{stem}{pdf.suffix.lower()}")
+            self.set_status(stem, "done", duration=round(duration), title=title, fmt=fmt)
         except ScannedPDFError as e:
             self.set_status(stem, "failed", error=str(e))
         except Exception as e:  # keep the worker alive; surface the failure
@@ -233,12 +264,12 @@ class Pipeline:
             time.sleep(5)
 
     def scan(self):
-        for pdf in sorted(self.input_dir.glob("*.pdf")):
-            stem = _safe(pdf.name)
+        for src in self._input_sources():
+            stem = _safe(src.name)
             if self.mp3(stem).exists() or self.status_path(stem).exists():
                 continue
             self.set_status(stem, "queued")
-            self.q.put(pdf)
+            self.q.put(src)
 
     def archive_dir(self) -> Path:
         return self.output_dir / "archive"
@@ -266,12 +297,10 @@ class Pipeline:
                 except json.JSONDecodeError:
                     continue
             for mp3 in arc.glob("*.mp3"):
-                seen.setdefault(
-                    mp3.stem, {"name": mp3.stem, "stage": "done", "progress": 100, "archived": True}
-                )
-        for pdf in self.input_dir.glob("*.pdf"):
+                seen.setdefault(mp3.stem, {"name": mp3.stem, "stage": "done", "progress": 100, "archived": True})
+        for src in self._input_sources():
             try:
-                stem = _safe(pdf.name)  # match scan()'s stem, or special chars ghost a second card
+                stem = _safe(src.name)  # match scan()'s stem, or special chars ghost a second card
             except HTTPException:
                 continue  # unprocessable name ("!!!.pdf") — the watcher rejects it too
             seen.setdefault(stem, {"name": stem, "stage": "queued", "progress": 0})
@@ -279,6 +308,22 @@ class Pipeline:
 
 
 pipeline = Pipeline(INPUT_DIR, OUTPUT_DIR)
+
+
+def _enqueue_or_skip(dest: Path, voice: str = "", mode: str = "") -> bool:
+    """Queue a fresh PDF sitting in input/. False when its job already exists (re-upload)."""
+    stem = dest.stem
+    if pipeline.mp3(stem).exists() or pipeline.status_path(stem).exists():
+        return False
+    extra = {}
+    if voice:
+        extra["voice"] = voice
+    if mode:
+        extra["mode"] = mode
+    # status before enqueue: the worker reads mode the instant it picks the job up
+    pipeline.set_status(stem, "queued", **extra)
+    pipeline.q.put(dest)
+    return True
 
 
 @asynccontextmanager
@@ -300,6 +345,12 @@ def index():
     return (_STATIC / "index.html").read_text()
 
 
+@app.get("/view", response_class=HTMLResponse)
+def view():
+    """The reader/editor page (new tab): /view?name=<job>."""
+    return (_STATIC / "view.html").read_text()
+
+
 @app.get("/api/jobs")
 def jobs():
     return pipeline.jobs()
@@ -313,34 +364,85 @@ async def upload(files: list[UploadFile] = File(...), voice: str = Form(""), mod
         mode = _mode_or_400(mode)
     saved = []
     for f in files:
-        if not (f.filename or "").lower().endswith(".pdf"):
-            raise HTTPException(400, f"{f.filename}: PDFs only")
+        ext = Path(f.filename or "").suffix.lower()
+        if ext not in SRC_EXT:
+            raise HTTPException(400, f"{f.filename}: supported types are {', '.join(sorted(SRC_EXT))}")
         data = await f.read(_MAX_UPLOAD + 1)  # bounded read
         if len(data) > _MAX_UPLOAD:
             raise HTTPException(413, f"{f.filename}: over the 50 MB limit")
-        dest = pipeline.input_dir / f"{_safe(f.filename)}.pdf"
-        tmp = dest.with_suffix(".tmp")  # atomic: watcher only globs *.pdf
+        dest = pipeline.input_dir / f"{_safe(f.filename)}{ext}"
+        tmp = dest.with_suffix(".tmp")  # atomic: watcher only picks up full writes
         tmp.write_bytes(data)
         os.replace(tmp, dest)
         saved.append(dest.name)
-    pipeline.scan()
-    if voice or mode:
-        for name in saved:
-            stem = Path(name).stem
-            d = pipeline.status_data(stem)
-            # annotate only jobs the worker will actually touch: `d and` guards
-            # mp3-only legacy jobs (no status) from getting a phantom "queued"
-            if d and d.get("stage") not in ("done", "failed"):
-                extra = {}
-                if voice:
-                    extra["voice"] = voice
-                # mode switch only while queued: later stages already run under the old mode
-                if mode and mode != d.get("mode", "summary") and d.get("stage") == "queued":
-                    pipeline.script(stem).unlink(missing_ok=True)
-                    extra["mode"] = mode
-                if extra:
-                    pipeline.set_status(stem, d["stage"], **extra)
+        _enqueue_or_skip(dest, voice, mode)
+    pipeline.scan()  # picks up anything dropped into input/ meanwhile
     return {"saved": saved}
+
+
+class UrlUpload(BaseModel):
+    url: str
+    voice: str = ""
+    mode: str = ""
+
+
+_ARXIV_ABS = re.compile(r"^https?://(www\.)?arxiv\.org/abs/([^/?#]+)", re.I)
+
+
+@app.post("/api/upload-url")
+def upload_url(u: UrlUpload):
+    """Fetch a PDF from a URL (arXiv abs pages rewrite to the PDF). LAN tool: the
+    container makes the request, so only feed it URLs you trust."""
+    voice = _voice_or_400(u.voice) if u.voice else ""
+    mode = _mode_or_400(u.mode) if u.mode else ""
+    url = u.url.strip()
+    m = _ARXIV_ABS.match(url)
+    if m:
+        url = f"https://arxiv.org/pdf/{m.group(2)}"
+    if not re.match(r"^https?://", url):
+        raise HTTPException(400, "http(s) URLs only")
+    req = urllib.request.Request(url, headers={"User-Agent": "paper-reader (local)"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = r.read(_MAX_UPLOAD + 1)  # bounded read
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"download failed: {e}")
+    if len(data) > _MAX_UPLOAD:
+        raise HTTPException(413, "over the 50 MB limit")
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(400, "that URL did not return a PDF")
+    base = Path(urllib.parse.urlparse(url).path).name or "paper"
+    if not base.lower().endswith(".pdf"):
+        base += ".pdf"  # arxiv /pdf/<id> paths carry no extension
+    dest = pipeline.input_dir / f"{_safe(base)}.pdf"
+    tmp = dest.with_suffix(".tmp")  # atomic: watcher only picks up full writes
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
+    return {"saved": dest.name, "queued": _enqueue_or_skip(dest, voice, mode)}
+
+
+_SAMPLE_TEXT = "Hello! I'll be reading your papers to you, ideas explained, equations skipped."
+_sample_lock = threading.Lock()
+
+
+_IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}  # content-addressed audio
+
+
+@app.get("/api/voice-sample/{voice}")
+def voice_sample(voice: str):
+    """Short cached preview of a Kokoro voice. Samples live in output/samples/ —
+    jobs() and feed.xml only glob output/ non-recursively, so they never leak in."""
+    voice = _voice_or_400(voice)
+    d = pipeline.output_dir / "samples"
+    d.mkdir(exist_ok=True)
+    out = d / f"{voice}.mp3"
+    if not out.exists():
+        with _sample_lock:  # double-click must not render the same sample twice
+            if not out.exists():
+                synthesize(_SAMPLE_TEXT, out, voice=voice)
+    return FileResponse(out, media_type="audio/mpeg", headers=_IMMUTABLE)
 
 
 @app.get("/api/audio/{name}")
@@ -362,8 +464,9 @@ def audio(name: str, dl: bool = False):
 
 
 @app.get("/feed.xml")
-def feed(request: Request):
-    """RSS 2.0 podcast feed of finished MP3s — subscribe from any podcast app."""
+def feed(request: Request, tag: str = ""):
+    """RSS 2.0 podcast feed of finished MP3s — subscribe from any podcast app.
+    ?tag=x narrows it to one tag, e.g. for a per-topic podcast app subscription."""
     base = str(request.base_url).rstrip("/")
     meta = {}
     for f in pipeline.output_dir.glob("*.status.json"):
@@ -375,6 +478,8 @@ def feed(request: Request):
     for mp3 in sorted(pipeline.output_dir.glob("*.mp3"), key=os.path.getmtime, reverse=True):
         st = mp3.stat()
         d = meta.get(mp3.stem, {})
+        if tag and tag not in (d.get("tags") or []):
+            continue
         title = escape(d.get("title") or mp3.stem)
         author = escape(d.get("authors") or "Paper Reader")
         dur = int(d.get("duration") or 0)
@@ -395,16 +500,39 @@ def feed(request: Request):
     return Response(content=xml, media_type="application/rss+xml")
 
 
-@app.get("/api/pdf/{name}")
-def pdf(name: str):
-    """Source PDF for the in-page viewer. Done jobs keep it in output/; also check
+_SRC_MIME = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8",
+    ".tex": "text/plain; charset=utf-8",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+@app.get("/api/source/{name}")
+def source(name: str, dl: bool = False):
+    """Original file for the in-page viewer. Done jobs keep it in output/; also check
     archive/ and input/ so failed or archived jobs are still readable."""
     stem = _safe(name)
-    for d in (pipeline.output_dir, pipeline.archive_dir(), pipeline.input_dir):
-        p = d / f"{stem}.pdf"
-        if p.exists():
-            return FileResponse(p, media_type="application/pdf")  # inline, not attachment
+    for d in (pipeline.output_dir, pipeline.archive_dir()):
+        for ext in SRC_EXT:
+            p = d / f"{stem}{ext}"
+            if p.exists():
+                return FileResponse(p, media_type=_SRC_MIME[ext])  # inline, not attachment
+    p = pipeline.input_source(stem)  # hand-dropped raw name ("Café (draft).pdf")
+    if p is not None:
+        return FileResponse(p, media_type=_SRC_MIME[p.suffix.lower()])
     raise HTTPException(404, "not found")
+
+
+@app.get("/api/follow/{name}")
+def follow(name: str):
+    """Sentence → time marks for the follow-along view (404 until the job is
+    (re-)rendered with a marks-writing build)."""
+    stem = _safe(name)
+    f = pipeline.follow(stem)
+    if not f.exists():
+        raise HTTPException(404, "no follow marks — re-render this paper to generate them")
+    return FileResponse(f, media_type="application/json")
 
 
 @app.get("/api/script/{name}", response_class=PlainTextResponse)
@@ -413,6 +541,76 @@ def script(name: str):
     if not s.exists():
         raise HTTPException(404, "not found")
     return s.read_text()
+
+
+_MAX_SCRIPT = 300_000  # a long verbatim paper is ~150 KB of text
+
+
+@app.post("/api/script/{name}")
+async def save_script(name: str, request: Request):
+    """Overwrite a job's narration script (paper-review editor). The previous
+    version is kept as <stem>.script.bak. Audio updates via the normal re-render,
+    which reuses this file when the mode is unchanged."""
+    stem = _safe(name)
+    _busy_or_409(stem)
+    s = pipeline.script(stem)
+    if not pipeline.mp3(stem).exists() and not s.exists():
+        raise HTTPException(404, "not found")
+    text = (await request.body()).decode("utf-8", "replace")
+    if len(text) > _MAX_SCRIPT:
+        raise HTTPException(413, "script too large")
+    if not text.strip():
+        raise HTTPException(400, "empty script")
+    if s.exists() and s.read_text() != text:
+        shutil.copy2(s, s.with_suffix(".bak"))
+    tmp = s.with_suffix(".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, s)
+    return {"saved": len(text)}
+
+
+_MAX_PREVIEW = 1500  # one or two TTS pieces — a few seconds of render
+
+
+class Preview(BaseModel):
+    text: str
+    voice: str = ""
+
+
+def _render_preview(text: str, voice: str) -> Path:
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "nothing to preview")
+    if len(text) > _MAX_PREVIEW:
+        raise HTTPException(413, f"preview is capped at {_MAX_PREVIEW} characters")
+    voice = _voice_or_400(voice) if voice else None
+    import hashlib
+
+    key = hashlib.sha1(f"{voice or ''}\n{text}".encode()).hexdigest()[:16]
+    d = pipeline.output_dir / "samples"
+    d.mkdir(exist_ok=True)
+    out = d / f"preview-{key}.mp3"
+    if not out.exists():
+        with _sample_lock:  # serialize web-process TTS; the worker has its own kokoro
+            if not out.exists():
+                synthesize(text, out, voice=voice)
+    return out
+
+
+@app.post("/api/preview")
+def preview(p: Preview):
+    """Audition a snippet with a voice before committing a full re-render.
+    Hash-cached: A/B tweaks of the same passage replay instantly.
+    shortcut: the cache grows unboundedly; wipe output/samples/ occasionally."""
+    return FileResponse(_render_preview(p.text, p.voice), media_type="audio/mpeg")
+
+
+@app.get("/api/preview")
+def preview_get(text: str = "", voice: str = ""):
+    """Same hash cache as POST, but GET + immutable: repeat listens are browser-cache
+    hits (the read-aloud engine's per-sentence fetches)."""
+    out = _render_preview(text, voice)
+    return FileResponse(out, media_type="audio/mpeg", headers=_IMMUTABLE)
 
 
 @app.post("/api/retry/{name}")
@@ -429,7 +627,7 @@ def retry(name: str):
         if failed:
             st.unlink()
             cleared = True
-    pdf = pipeline.find_pdf(stem)
+    pdf = pipeline.find_source(stem)
     if cleared and pdf is not None:
         # queue directly: scan() would skip it if a partial mp3 exists
         pipeline.set_status(stem, "queued")
@@ -474,9 +672,9 @@ def rerender(name: str, voice: str = "", mode: str = ""):
     mp3 = pipeline.mp3(stem)
     if not mp3.exists():
         raise HTTPException(409, "only finished jobs can be re-rendered")
-    pdf = pipeline.find_pdf(stem)
+    pdf = pipeline.find_source(stem)
     if pdf is None:
-        raise HTTPException(404, "source PDF missing")
+        raise HTTPException(404, "source file missing")
     keep = {k: v for k, v in pipeline.status_data(stem).items() if k in ("tags", "title", "authors", "voice", "mode")}
     if voice:
         keep["voice"] = _voice_or_400(voice)
@@ -488,6 +686,7 @@ def rerender(name: str, voice: str = "", mode: str = ""):
     pipeline.status_path(stem).unlink(missing_ok=True)  # clean slate: started/duration restamp
     pipeline.set_status(stem, "queued", **keep)
     mp3.unlink()  # last: a crash leaves "queued + stale mp3" — the rerun overwrites it
+    pipeline.follow(stem).unlink(missing_ok=True)  # stale marks belong to the old audio's timing
     pipeline.q.put(pdf)
     return {"requeued": True}
 
@@ -500,17 +699,22 @@ def archive(name: str, undo: bool = False):
     arc = pipeline.archive_dir()
     moved = 0
     if undo:
-        for p in sorted(arc.glob(f"{stem}.*")):
+        targets = sorted(arc.glob(f"{stem}.*"))
+        if any((pipeline.output_dir / p.name).exists() for p in targets):
+            raise HTTPException(409, "a live job with this name exists — delete it first")
+        for p in targets:
             p.replace(pipeline.output_dir / p.name)
             moved += 1
     else:
         arc.mkdir(exist_ok=True)
         candidates = (
-            pipeline.input_dir / f"{stem}.pdf",
+            *[pipeline.input_dir / f"{stem}{ext}" for ext in SRC_EXT],
             pipeline.input_dir / f"{stem}.tmp",  # orphaned half-upload
-            pipeline.output_dir / f"{stem}.pdf",
+            *[pipeline.output_dir / f"{stem}{ext}" for ext in SRC_EXT],
             pipeline.mp3(stem),
             pipeline.script(stem),
+            pipeline.output_dir / f"{stem}.script.bak",
+            pipeline.follow(stem),
             pipeline.status_path(stem),
             pipeline.output_dir / f"{stem}.tmp",  # orphaned half-written mp3
             pipeline.output_dir / f"{stem}.status.tmp",  # orphaned half-written status
@@ -529,21 +733,24 @@ def delete(name: str):
     removed = 0
     arc = pipeline.archive_dir()
     for p in (
-        pipeline.input_dir / f"{stem}.pdf",
+        pipeline.input_source(stem),  # None when input/ has no source for this stem
         pipeline.input_dir / f"{stem}.tmp",
-        pipeline.output_dir / f"{stem}.pdf",
+        *[pipeline.output_dir / f"{stem}{ext}" for ext in SRC_EXT],
         pipeline.mp3(stem),
         pipeline.script(stem),
+        pipeline.follow(stem),
         pipeline.status_path(stem),
         pipeline.output_dir / f"{stem}.tmp",
         pipeline.output_dir / f"{stem}.status.tmp",
-        arc / f"{stem}.pdf",
         arc / f"{stem}.tmp",
         arc / f"{stem}.mp3",
         arc / f"{stem}.script.txt",
+        arc / f"{stem}.script.bak",
+        arc / f"{stem}.follow.json",
         arc / f"{stem}.status.json",
+        *[arc / f"{stem}{ext}" for ext in SRC_EXT],
     ):
-        if p.exists():
+        if p is not None and p.exists():
             p.unlink()
             removed += 1
     return {"removed": removed}

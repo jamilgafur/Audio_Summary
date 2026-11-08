@@ -5,6 +5,7 @@ on CUDA OOM kills the process — not a catchable exception), and that must not 
 the web app down with it. A crash surfaces as ChildCrashedError, and the caller
 retries once on CPU. The child's exit also frees the VRAM deterministically.
 """
+
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -89,7 +90,7 @@ def _generate(paper: dict, emit, force_cpu: bool) -> str:
             {
                 "role": "user",
                 "content": (
-                    f"This is part {i + 1} of {len(chunks)} of the paper \"{title}\". "
+                    f'This is part {i + 1} of {len(chunks)} of the paper "{title}". '
                     "Rewrite it as spoken narration in 2-4 paragraphs.\n\n" + chunk
                 ),
             },
@@ -158,7 +159,9 @@ def narrate(paper: dict, progress=None, on_backend=None) -> str:
     """paper: dict from extract.extract(). Returns the full narration script."""
     if os.getenv("NARRATE_MOCK"):  # test path: no model download, instant
         title, authors = paper["title"], paper["authors"] or "unknown authors"
-        return f"You're listening to {title}, by {authors}.\n\n" + "This is a mock narration used by the test suite. " * 30
+        return (
+            f"You're listening to {title}, by {authors}.\n\n" + "This is a mock narration used by the test suite. " * 30
+        )
 
     try:
         return _run_child(_child_main, (False, paper), progress, on_backend)[0]

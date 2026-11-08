@@ -1,4 +1,5 @@
 """End-to-end smoke test: PDF -> (mocked LLM) -> real Kokoro TTS -> real MP3."""
+
 import json
 import os
 

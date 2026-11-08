@@ -28,8 +28,7 @@ def _make_pdf(path, lines):
 
 PROSE = (
     "We study how readers listen to papers aloud and why clear narration "
-    "helps the comprehension of complex technical material. "
-    * 6
+    "helps the comprehension of complex technical material. " * 6
 )
 
 
@@ -62,5 +61,65 @@ def test_scanned_pdf_rejected(tmp_path):
     page.insert_image(page.rect, pixmap=pix)
     p = tmp_path / "scanned.pdf"
     doc.save(p)
+    with pytest.raises(ScannedPDFError):
+        extract(p)
+
+
+# ---- plain-text sources -------------------------------------------------
+
+
+def test_txt_extracts_first_line_as_title(tmp_path):
+    p = tmp_path / "notes.txt"
+    p.write_text("How Readers Hear Papers\n\n" + PROSE)
+    paper = extract(p)
+    assert paper["title"] == "How Readers Hear Papers"
+    assert paper["sections"][0]["title"] == "full text"
+    assert PROSE[:40] in paper["sections"][0]["text"]
+
+
+def test_tex_strips_commands_and_splits_sections(tmp_path):
+    body = PROSE.replace("\n", " ")
+    p = tmp_path / "paper.tex"
+    p.write_text(
+        "\\documentclass{article}\n\\title{A TeX Study\\\\With More}\n"
+        "\\author{Ada Lovelace \\and Alan Turing}\n\\begin{document}\n\\maketitle\n"
+        f"\\section{{Introduction}}\n{body} \\cite{{doe2024}} $E=mc^2$ see Figure~\\ref{{fig:x}}.\n"
+        "% a comment that must never be read\n"
+        f"\\section{{Methods}}\n{body} \\textbf{{important}} finding.\n"
+        "\\section{References}\n\\bibliography{refs}\n\\end{document}\n"
+    )
+    paper = extract(p)
+    assert paper["title"] == "A TeX Study"  # \\ line-break cut
+    assert "Ada Lovelace" in paper["authors"]
+    titles = [s["title"] for s in paper["sections"]]
+    assert titles == ["Introduction", "Methods"], titles  # references dropped by _finish
+    whole = " ".join(s["text"] for s in paper["sections"])
+    for junk in ("\\cite", "doe2024", "E=mc", "\\ref", "fig:x", "textbf", "a comment"):
+        assert junk not in whole
+    assert "important" in whole
+
+
+def test_docx_extracts_paragraph_text(tmp_path):
+    import zipfile
+
+    p = tmp_path / "notes.docx"
+    paras = "".join(
+        f"<w:p><w:r><w:t>{line}</w:t></w:r></w:p>" for line in ["A Word Document", PROSE[:360], PROSE[360:]]
+    )
+    xml = (
+        '<?xml version="1.0"?><w:document '
+        'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{paras}</w:body></w:document>"
+    )
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("word/document.xml", xml)
+    paper = extract(p)
+    assert paper["title"] == "A Word Document"
+    assert PROSE[:40] in paper["sections"][0]["text"]
+
+
+def test_short_txt_rejected(tmp_path):
+    p = tmp_path / "tiny.txt"
+    p.write_text("too short.")
     with pytest.raises(ScannedPDFError):
         extract(p)

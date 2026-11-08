@@ -4,71 +4,103 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Paper Reader</title>
+<script>document.documentElement.dataset.theme = localStorage.getItem('pr-theme') || 'dark';</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
 <link rel="stylesheet" href="/static/pico.min.css">
 <style>
   :root { --grad: linear-gradient(120deg, #7c6cff, #38b6ff 55%, #2ee6a8); }
-  body { max-width: 880px; margin: 0 auto; }
+  body { max-width: 920px; margin: 0 auto; }
+  body:has(#tab-write:not([hidden])) { max-width: 1400px; }  /* the split editor wants the room */
+  .mini { width: auto !important; padding: .25rem .7rem; font-size: .75rem; margin: 0; }
+  select.mini { padding-right: 1.6rem; }
+  .danger { color: #ff8080 !important; border-color: #a04040 !important; }
 
   /* hero */
-  .hero { text-align: center; padding: 2.5rem 1rem 1rem; }
+  .hero { position: relative; text-align: center; padding: 2.5rem 1rem 1rem; }
   .hero h1 { font-size: 2.2rem; margin-bottom: .3rem;
     background: var(--grad); -webkit-background-clip: text; background-clip: text;
     color: transparent; }
   .hero p { color: var(--pico-muted-color); margin: 0; }
   .hero a { font-size: .85rem; }
+  .corner { position: absolute; top: 1rem; right: 0; display: flex; gap: .4rem; }
 
   /* drop zone */
   #drop {
     margin-top: 1.5rem; text-align: center; cursor: pointer;
     border: 2px dashed var(--pico-muted-border-color); border-radius: 16px;
-    padding: 2.75rem 1rem; color: var(--pico-muted-color);
+    padding: 2.5rem 1rem; color: var(--pico-muted-color);
     transition: border-color .15s, transform .15s, box-shadow .15s;
   }
   #drop .big { font-size: 1.9rem; display: block; margin-bottom: .25rem; }
+  #drop:focus-visible { outline: 2px solid #38b6ff; outline-offset: 2px; }
   #drop.over { border-color: #38b6ff; color: #38b6ff; transform: scale(1.01);
     box-shadow: 0 0 32px #38b6ff33; }
   #uploadbar { margin-top: 1rem; display: none; }
   #voice { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
+  .urlrow { margin-top: .6rem; flex-wrap: nowrap; }
+  #urlbox { flex: 1 1 auto; font-size: .85rem; margin: 0; }
 
-  /* search */
   #search { margin-top: 1rem; }
+
+  /* filter chips */
+  #filters { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .6rem; }
+  #filters:empty { display: none; }
+  .chip { border-radius: 999px; border: 1px solid var(--pico-muted-border-color);
+    background: transparent; color: var(--pico-color); padding: .12rem .65rem;
+    font-size: .72rem; font-weight: 700; cursor: pointer; margin: 0; width: auto; }
+  .chip.on { background: #38b6ff; border-color: #38b6ff; color: #04202f; }
+  a.chip { text-decoration: none; display: inline-block; }
 
   /* toast */
   #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%);
-    background: #7a2f2f; color: #fff; padding: .6rem 1.1rem; border-radius: 10px;
-    font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 9; }
+    background: #2f4a5f; color: #fff; padding: .6rem 1.1rem; border-radius: 10px;
+    font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .25s;
+    z-index: 20; max-width: 90vw; }
+  #toast.err { background: #7a2f2f; }
   #toast.show { opacity: 1; }
 
   /* group headings */
-  .group { margin: 1.75rem 0 .9rem; font-size: .8rem; font-weight: 700;
+  .group { display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+    margin: 1.75rem 0 .9rem; font-size: .8rem; font-weight: 700;
     letter-spacing: .08em; text-transform: uppercase; color: var(--pico-muted-color); }
   .group .total { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .group .groupside { display: flex; gap: .6rem; align-items: center; letter-spacing: 0;
+    text-transform: none; font-weight: 400; }
   details.groupbox summary { cursor: pointer; margin: 1.75rem 0 .9rem;
     font-size: .8rem; font-weight: 700; letter-spacing: .08em;
     text-transform: uppercase; color: var(--pico-muted-color); }
   details.groupbox .card { opacity: .75; }
 
   /* job cards */
-  .card { border: 1px solid var(--pico-muted-border-color); border-radius: 14px;
-    padding: 1.1rem 1.25rem; margin-bottom: 1rem; background: #ffffff08; }
-  .card h3 { margin: 0 0 .5rem; font-size: 1.02rem; word-break: break-word; }
+  .card { position: relative; border: 1px solid var(--pico-muted-border-color);
+    border-radius: 14px; padding: 1.1rem 1.25rem; margin-bottom: 1rem;
+    background: #ffffff08; }
+  .card h3 { margin: 0 0 .5rem; font-size: 1.02rem; word-break: break-word; padding-right: 1.8rem; }
+  .tlink { text-decoration: none; color: inherit; }
+  .tlink:hover { color: #38b6ff; }
+  .sel { position: absolute; top: .8rem; right: .8rem; width: auto; margin: 0; }
   .fname { font-size: .75rem; color: var(--pico-muted-color); }
   .meta { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap;
     color: var(--pico-muted-color); font-size: .85rem; }
   .badge { border-radius: 999px; padding: .12rem .65rem; font-size: .72rem;
-    font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+    font-weight: 700; letter-spacing: .02em; text-transform: uppercase; border: none; }
   .badge.working { background: #31517a; }
   .badge.done { background: #2e6b3f; }
   .badge.failed { background: #7a2f2f; }
   .badge.queued { background: #555; }
-  .badge.tag { background: #4a3f6b; cursor: pointer; }
+  .badge.tag { background: #4a3f6b; cursor: pointer; color: inherit; margin: 0; width: auto; }
   .tagsrow { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }
   .tagsrow:empty { display: none; }
   .dur { color: var(--pico-muted-color); }
   .sum { font-size: .85rem; color: var(--pico-muted-color); margin: .5rem 0 0; }
   details.sandbox { margin-top: .5rem; font-size: .85rem; }
   details.sandbox summary { color: var(--pico-muted-color); cursor: pointer; }
+  .inlineedit { font-size: .95rem; padding: .2rem .5rem; margin: 0; width: min(100%, 30rem); }
+
+  /* listening progress */
+  .heard { height: 3px; background: var(--pico-muted-border-color); border-radius: 2px;
+    margin-top: .7rem; overflow: hidden; }
+  .heard div { height: 100%; background: #38b6ff; }
 
   /* stage stepper */
   .steps { display: flex; align-items: center; gap: .4rem; margin: .8rem 0 .3rem;
@@ -96,38 +128,135 @@
   .row select { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
   .row button, .row a.btn { width: auto; padding: .3rem .8rem; font-size: .8rem; margin: 0;
     display: inline-block; }
-  /* read & listen viewer: lives outside #jobs so polling never reloads the PDF */
-  #viewer { margin-top: 1rem; }
-  #viewer .vhead { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
-  #viewer .vhead strong { word-break: break-word; }
-  #viewer .split { display: flex; gap: 1rem; margin-top: .5rem; }
-  #vpdf { flex: 3 1 0; height: 82vh; background: #fff;
-    border: 1px solid var(--pico-muted-border-color); border-radius: 10px; }
-  #viewer .side { flex: 2 1 240px; min-width: 210px; }
-  @media (max-width: 700px) {
-    #viewer .split { flex-direction: column; }
-    #vpdf { height: 65vh; }
-  }
+
+  /* overflow menu */
+  details.menu { position: relative; display: inline-block; margin: 0; }
+  details.menu summary { display: inline-block; list-style: none; cursor: pointer;
+    user-select: none; padding: .3rem .8rem; font-size: .8rem; line-height: 1.4;
+    border-radius: 8px; border: 1px solid var(--pico-muted-border-color);
+    color: var(--pico-color); background: transparent; margin: 0; }
+  details.menu summary::-webkit-details-marker { display: none; }
+  details.menu summary::after { display: none !important; }
+  details.menu summary:hover, details.menu[open] summary { border-color: #38b6ff; }
+  details.menu .panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 6;
+    min-width: 175px; display: flex; flex-direction: column; gap: 2px; padding: .3rem;
+    background: var(--pico-card-background-color, var(--pico-background-color));
+    border: 1px solid var(--pico-muted-border-color); border-radius: 10px;
+    box-shadow: 0 8px 24px #0008; }
+  details.menu .panel button { width: 100%; text-align: left; padding: .35rem .6rem;
+    border-radius: 6px; font-size: .85rem; margin: 0; background: none;
+    border: 1px solid transparent; color: var(--pico-color); }
+  details.menu .panel button:hover { background: var(--pico-muted-border-color); }
+  details.menu .panel .vrow { display: flex; gap: .4rem; align-items: center;
+    padding: .2rem .6rem; font-size: .85rem; }
+  details.menu .panel .vrow select { width: 100%; margin: 0; padding: .15rem 1.6rem .15rem .4rem;
+    font-size: .82rem; }
+
+  /* bulk action bar */
+  #bulkbar { position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%);
+    display: flex; gap: .6rem; align-items: center; padding: .5rem .9rem; z-index: 15;
+    background: var(--pico-card-background-color, var(--pico-background-color));
+    border: 1px solid var(--pico-muted-border-color); border-radius: 999px;
+    box-shadow: 0 8px 24px #000a; font-size: .85rem; }
+
 
   .empty { color: var(--pico-muted-color); text-align: center; padding: 2.5rem 1rem; }
+
+  /* in-app tabs */
+  .tabs { display: flex; gap: .2rem; margin-top: 1.25rem;
+    border-bottom: 1px solid var(--pico-muted-border-color); }
+  .tabs button { width: auto; margin: 0; padding: .45rem 1rem; font-size: .9rem;
+    background: none; border: none; border-bottom: 2px solid transparent;
+    border-radius: 0; color: var(--pico-muted-color); }
+  .tabs button.on { color: var(--pico-color); border-bottom-color: #38b6ff; }
+  .tabs button:hover { color: #38b6ff; }
+  #drop .defaults { display: block; margin-top: .7rem; font-size: .78rem; }
+  #wsplit { display: flex; gap: .8rem; margin-top: .6rem; }
+  #wpane { flex: 1 1 0; min-width: 0; max-height: 72vh; overflow-y: auto; padding: .6rem .8rem;
+    font-size: .95rem; line-height: 1.7; border: 1px solid var(--pico-muted-border-color);
+    border-radius: 10px; background: var(--pico-card-background-color, transparent); }
+  #wpane .sent { cursor: pointer; border-radius: 3px; }
+  #wpane .sent:hover { background: #38b6ff22; }
+  #wpane .sent.on { background: #38b6ff44; }
+  #wtext { flex: 1 1 0; min-width: 0; height: 72vh; margin: 0; padding: .8rem;
+    font-size: .95rem; line-height: 1.7; resize: vertical; }
+  @media (max-width: 760px) {
+    #wsplit { flex-direction: column; }
+    #wpane { max-height: 28vh; }
+    #wtext { height: 45vh; }
+  }
+  .feedrows { margin-top: 1rem; display: flex; flex-direction: column; gap: .5rem; }
+  .feedrow { display: flex; gap: .6rem; align-items: center; padding: .6rem .9rem;
+    border: 1px solid var(--pico-muted-border-color); border-radius: 10px; }
+  .feedrow code { flex: 1; word-break: break-all; font-size: .78rem;
+    color: var(--pico-muted-color); }
+  .feedrow .t { font-weight: 700; }
   footer { text-align: center; color: var(--pico-muted-color); font-size: .78rem; padding: 2rem 0 1rem; }
 </style>
 </head>
 <body>
 <header class="hero">
+  <div class="corner">
+    <button id="notifybtn" class="mini secondary" title="notify me when a paper is ready">🔕</button>
+    <button id="themebtn" class="mini secondary" title="toggle light / dark">☀️</button>
+  </div>
   <h1>📄 → 🎧 Paper Reader</h1>
   <p>Drop a research paper below — or into <code>input/</code> — and listen to it as an MP3.<br>
-  <a href="/feed.xml">📡 RSS podcast feed</a> <button id="copyfeed" class="secondary" style="width:auto;padding:.15rem .6rem;font-size:.75rem;margin:0">copy URL</button>
+  <a href="/feed.xml">📡 RSS podcast feed</a> <button id="copyfeed" class="secondary mini">copy URL</button>
   — point any podcast app (or Audiobookshelf) at it.</p>
 </header>
 
 <main>
-  <div id="drop">
-    <span class="big">⬇️</span>
-    Drop PDFs here, or click to browse
-    <input id="filepick" type="file" accept=".pdf" multiple hidden>
-    <progress id="uploadbar"></progress>
-    <div class="row" style="justify-content:center">
+  <nav class="tabs">
+    <button data-tab="library" class="on">📚 Library</button>
+    <button data-tab="write">✍️ Write</button>
+    <button data-tab="voices">🎙 Voices</button>
+    <button data-tab="feeds">📡 Feeds</button>
+  </nav>
+
+  <section id="tab-library">
+    <div id="drop" role="button" tabindex="0" aria-label="Upload papers">
+      <span class="big">⬇️</span>
+      Drop papers here, or click to browse <span style="font-size:.8rem">(.pdf · .txt · .tex · .docx)</span>
+      <input id="filepick" type="file" accept=".pdf,.txt,.tex,.docx" multiple hidden>
+      <progress id="uploadbar"></progress>
+      <div class="defaults" id="defaultsline"></div>
+    </div>
+    <div class="row urlrow">
+      <input id="urlbox" type="url" placeholder="…or paste an arXiv / PDF link" aria-label="arXiv or PDF URL">
+      <button id="urlgo" class="secondary mini">fetch</button>
+    </div>
+    <input id="search" type="search" placeholder="🔍 search title, authors, tags…">
+    <div id="filters"></div>
+    <section id="jobs" style="margin-top:1rem"><p class="empty">No papers yet.</p></section>
+  </section>
+
+  <section id="tab-write" hidden>
+    <div class="row" style="margin-top:1rem">
+      <button id="wplay" class="mini" title="read the draft aloud from the cursor — pause, edit, resume re-reads your edits (verbatim)">▶ play</button>
+      <button id="wback" class="mini secondary" title="previous sentence">⏮</button>
+      <button id="wfwd" class="mini secondary" title="next sentence">⏭</button>
+      <button id="wstop" class="mini secondary" title="stop reading">■</button>
+      <span id="wpos" class="dur"></span>
+      <label class="dur">speed <select id="wspeed" class="mini"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option></select></label>
+      <label class="dur">voice <select id="wvoice" class="mini" title="voice for this tab — same as the Voices-tab default"></select></label>
+      <span id="wcount" class="dur"></span>
+      <span style="flex:1"></span>
+      <button id="wprev2" class="mini secondary" title="listen from ~2 sentences before the cursor (Ctrl+Enter), or to the selection">▶ listen back</button>
+      <button id="wsend" class="mini secondary" title="turn this draft into a library paper (verbatim .txt)">⬇️ send to library</button>
+    </div>
+    <div id="wsplit">
+      <div id="wpane" aria-label="read-aloud view of the draft"></div>
+      <textarea id="wtext" spellcheck="true" aria-label="draft editor"
+        placeholder="Paste or write your draft here — select a passage and ▶ listen back to hear it read aloud."></textarea>
+    </div>
+    <p class="dur">Left: what’s being read (click a sentence to jump). Right: your text. Edits sync over in under a second,
+    and only the changed sentences re-render. Auto-saved in this browser. “Send to library” uploads it as a .txt
+    (first line becomes the title) so a full verbatim render gets follow-along and re-render editing.</p>
+  </section>
+
+  <section id="tab-voices" hidden>
+    <div class="row" style="margin-top:1.25rem">
       <label>voice
         <select id="voice">
           <option value="af_heart">♀ heart (default)</option>
@@ -143,71 +272,377 @@
           <option value="bm_lewis">♂ lewis (brit)</option>
         </select>
       </label>
+      <button id="vprev" class="mini secondary" title="preview this voice">🔊 preview</button>
+    </div>
+    <div class="row">
       <label>mode
         <select id="mode">
           <option value="summary">✍ summary (explained)</option>
           <option value="verbatim">📖 verbatim (exact words)</option>
         </select>
       </label>
-      <span style="font-size:.75rem">voice &amp; mode apply to new uploads and re-renders</span>
+      <span class="dur">verbatim skips the LLM — for reviewing your own drafts</span>
     </div>
-  </div>
-  <input id="search" type="search" placeholder="🔍 search title, authors, tags…">
-  <section id="viewer" hidden>
-    <div class="vhead">
-      <strong id="vtitle"></strong>
-      <button id="vclose" class="secondary">✕ close</button>
-    </div>
-    <div class="split">
-      <iframe id="vpdf" title="PDF"></iframe>
-      <div class="side"><audio id="vaudio" controls></audio></div>
-    </div>
+    <p class="dur">These are the defaults for new uploads, URL fetches, and re-renders.
+    Playback position counts as “listened”; the 🎧 Library group shows what’s left.</p>
   </section>
-  <section id="jobs" style="margin-top:1rem"><p class="empty">No papers yet.</p></section>
+
+  <section id="tab-feeds" hidden>
+    <p class="dur" style="margin-top:1rem">Point any podcast app (or Audiobookshelf) at one of these.
+    Per-tag feeds include only papers carrying that tag.</p>
+    <div class="feedrows" id="feedrows"></div>
+  </section>
 </main>
 
+<div id="bulkbar" hidden>
+  <span id="bulkcount"></span>
+  <button id="bulkarch" class="mini secondary">🗃 archive</button>
+  <button id="bulkdel" class="mini secondary outline">✕ delete</button>
+  <button id="bulkclear" class="mini secondary">clear</button>
+</div>
+
 <footer>Runs fully on your machine — nothing leaves it.</footer>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
-const drop = document.getElementById('drop');
-const pick = document.getElementById('filepick');
-const upbar = document.getElementById('uploadbar');
-const voiceSel = document.getElementById('voice');
-const modeSel = document.getElementById('mode');
-const searchBox = document.getElementById('search');
+'use strict';
+const $ = id => document.getElementById(id);
+const drop = $('drop'), pick = $('filepick'), upbar = $('uploadbar');
+const voiceSel = $('voice'), modeSel = $('mode'), searchBox = $('search');
+const jobsEl = $('jobs'), bulkbar = $('bulkbar');
 const STAGES = [['extracting','📄','Extract'],['narrating','✍️','Narrate'],
                 ['rendering audio','🔊','Render'],['done','✅','Done']];
 const ACTIVE = new Set(['queued','extracting','narrating','rendering audio']);
 
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtDur = s => `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
+const errMsg = async (r, fallback) => { try { return JSON.parse(await r.text()).detail || fallback; } catch { return fallback; } };
+
+/* persisted prefs */
 voiceSel.value = localStorage.getItem('pr-voice') || 'af_heart';
-voiceSel.onchange = () => localStorage.setItem('pr-voice', voiceSel.value);
 modeSel.value = localStorage.getItem('pr-mode') || 'summary';
-modeSel.onchange = () => localStorage.setItem('pr-mode', modeSel.value);
+let sortMode = localStorage.getItem('pr-sort') || 'recent';
+modeSel.onchange = () => { localStorage.setItem('pr-mode', modeSel.value); updateDefaults(); };
 searchBox.oninput = () => render();
 
-document.getElementById('copyfeed').onclick = e => {
+/* ui state (survives polling re-renders) */
+let jobsCache = [];
+let activeFilter = null;           // tag string, or 'unlistened'
+const selected = new Set();        // bulk selection, by job name
+const delPending = new Set();      // two-tap delete: armed names
+let bulkDelArmed = false;
+let playlistOn = false;
+let playlistQueue = [];
+let renderedLib = [];              // done names in rendered order
+let renderPending = false;
+let firstLoad = true;
+const prevStages = {};
+let notifyOn = localStorage.getItem('pr-notify') === '1' && 'Notification' in window && Notification.permission === 'granted';
+
+/* playback positions survive page reloads */
+const pos = {
+  get: n => +localStorage.getItem('pr-pos:' + n) || 0,
+  set: (n, t) => localStorage.setItem('pr-pos:' + n, t),
+};
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+/* theme */
+const themeBtn = $('themebtn');
+const setThemeIcon = () => themeBtn.textContent = document.documentElement.dataset.theme === 'dark' ? '☀️' : '🌙';
+themeBtn.onclick = () => {
+  const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem('pr-theme', t);
+  setThemeIcon();
+};
+setThemeIcon();
+
+/* done-notification toggle */
+const nbtn = $('notifybtn');
+const setNIcon = () => nbtn.textContent = notifyOn ? '🔔' : '🔕';
+nbtn.onclick = async () => {
+  if (!('Notification' in window)) return toast('This browser has no notifications', true);
+  if (Notification.permission === 'denied') return toast('Notifications are blocked in browser settings', true);
+  if (!notifyOn && Notification.permission !== 'granted') {
+    if (await Notification.requestPermission() !== 'granted') return;
+  }
+  notifyOn = !notifyOn;
+  localStorage.setItem('pr-notify', notifyOn ? '1' : '0');
+  setNIcon();
+  if (notifyOn) toast('You’ll get a notification when a paper is ready');
+};
+setNIcon();
+
+/* one shared preview/snippet player (voice samples + script preview) */
+let previewAudio = null;
+function stopPreview() {
+  if (!previewAudio) return;
+  previewAudio.pause();
+  if (previewAudio._btn) previewAudio._btn.textContent = previewAudio._label;
+  previewAudio = null;
+}
+function playSnippet(urlOrBlob, btn, busyLabel, idleLabel) {
+  if (previewAudio && previewAudio._btn === btn) return stopPreview();
+  stopPreview();
+  if (RD.playing) readPause();  // one voice at a time
+  const a = typeof urlOrBlob === 'string' ? new Audio(urlOrBlob) : new Audio(URL.createObjectURL(urlOrBlob));
+  previewAudio = a;
+  a._btn = btn;
+  a._label = idleLabel;
+  btn.textContent = busyLabel;
+  a.onended = a.onerror = () => { if (previewAudio === a) { previewAudio = null; btn.textContent = idleLabel; } };
+  a.play().catch(() => {
+    if (previewAudio === a) { previewAudio = null; btn.textContent = idleLabel; }
+    toast('Preview unavailable', true);
+  });
+}
+$('vprev').onclick = () =>
+  playSnippet('/api/voice-sample/' + encodeURIComponent(voiceSel.value), $('vprev'), '⏹', '🔊');
+voiceSel.onchange = () => { localStorage.setItem('pr-voice', voiceSel.value); stopPreview(); updateDefaults(); $('wvoice').value = voiceSel.value; };
+const wvoice = $('wvoice');
+wvoice.innerHTML = voiceSel.innerHTML;
+wvoice.value = voiceSel.value;
+wvoice.onchange = () => {
+  voiceSel.value = wvoice.value;
+  voiceSel.onchange();  // one default, two doors
+  for (const u of RD.cache.values()) URL.revokeObjectURL(u);  // blobs are voice-specific
+  RD.cache.clear();
+};
+
+/* ---- Write tab: scratchpad + instant listen + send to library ---- */
+const wtext = $('wtext');
+wtext.value = localStorage.getItem('pr-draft') || '';
+function updateWCount() {
+  const n = wtext.value.length;
+  $('wcount').textContent = `${n} chars · ≈${Math.max(1, Math.round(n / 900))} min spoken`;
+}
+let wsaveT = null;
+wtext.addEventListener('input', () => {
+  updateWCount();  // trivial; keep the counter live
+  clearTimeout(wsaveT);  // the storage write is synchronous main-thread work — batch it
+  wsaveT = setTimeout(() => localStorage.setItem('pr-draft', wtext.value), 500);
+  if (RD.on) RD.dirty = true;
+  scheduleIdleRender();  // sync the read pane (paused or stopped) + pre-warm when paused
+});
+addEventListener('pagehide', () => {  // don't lose the last half-second of typing
+  clearTimeout(wsaveT);
+  localStorage.setItem('pr-draft', wtext.value);
+});
+updateWCount();
+
+/* listen window: start ~2 sentences (or a paragraph) before the caret, head up to max chars */
+function listenWindow(text, caret, back = 2, max = 1200) {
+  const bounds = [0], re = /(?:[.!?][\"'”’)\]]*\s+|\n\s*\n)/g;
+  let m;
+  while ((m = re.exec(text)) && m.index + m[0].length <= caret) bounds.push(m.index + m[0].length);
+  const start = bounds[Math.max(0, bounds.length - 1 - back)];
+  return text.slice(start, start + max).trim();
+}
+
+wtext.addEventListener('keydown', e => {  // Ctrl+Enter = listen from ~2 sentences back
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('wprev2').click(); }
+});
+
+$('wprev2').onclick = async () => {
+  const btn = $('wprev2');
+  const {selectionStart: s0, selectionEnd: s1} = wtext;
+  const text = s1 > s0 ? wtext.value.slice(s0, s1).trim() : listenWindow(wtext.value, s0);
+  if (!text) { toast('Nothing to listen to — write or select some text', true); return; }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/preview', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, voice: voiceSel.value})});
+    if (r.status >= 400) { toast(await errMsg(r, 'Preview failed'), true); return; }
+    playSnippet(await r.blob(), btn, '⏹ playing', '▶ listen');
+  } catch { toast('Preview failed', true); }
+  btn.disabled = false;
+};
+
+$('wsend').onclick = () => {
+  const text = wtext.value.trim();
+  if (!text) { toast('Nothing to send — the draft is empty', true); return; }
+  const first = (text.split('\n').find(l => l.trim()) || 'draft').trim();
+  const fname = (first.replace(/[^\w .-]/g, '').slice(0, 48).trim() || 'draft') + '.txt';
+  upload([new File([text], fname, {type: 'text/plain'})]);
+  showTab('library');  // watch it process
+};
+
+/* ---- read-aloud: sentence-stepping playback over the draft (verbatim) ----
+   One sentence = one cached TTS piece: edits only re-render the sentences they touch,
+   so pause → edit → resume re-reads your changes from the same sentence. */
+const RD = {on: false, playing: false, sents: [], idx: 0, cache: new Map(), dirty: false, seq: 0, paneText: ''};
+const raudio = new Audio();
+
+function splitSents(text) {
+  const out = [], re = /[^.!?\n]+(?:[.!?]+["'”’)\]]*|\n+|$)|[.!?]+["'”’)\]]*/g;
+  let m;
+  while ((m = re.exec(text))) {
+    let s = m[0].trim();
+    while (s.length > 1400) { out.push(s.slice(0, 1400)); s = s.slice(1400).trim(); }  // preview cap
+    if (s) out.push(s);
+  }
+  return out;
+}
+
+function readRebuild() {
+  RD.sents = splitSents(wtext.value);
+  RD.idx = Math.min(RD.idx, Math.max(0, RD.sents.length - 1));
+  RD.dirty = false;
+}
+
+function rdKey(text) { return text + '\u0000' + wvoice.value; }  // text-keyed: edits can't replay stale audio
+function rdHas(text) { return RD.cache.has(rdKey(text)); }
+
+function readUrl(i) {
+  const text = RD.sents[i];
+  if (RD.cache.has(rdKey(text))) return Promise.resolve(RD.cache.get(rdKey(text)));
+  // GET + immutable: sentences heard before are browser-cache hits, zero network
+  return fetch('/api/preview?text=' + encodeURIComponent(text)
+      + '&voice=' + encodeURIComponent(wvoice.value))
+    .then(async r => {
+      if (r.status >= 400) { toast(await errMsg(r, 'Read failed'), true); throw new Error('preview'); }
+      const u = URL.createObjectURL(await r.blob());
+      RD.cache.set(rdKey(text), u);
+      if (RD.cache.size > 60) {  // bound memory: drop the oldest entry
+        const k = RD.cache.keys().next().value;
+        URL.revokeObjectURL(RD.cache.get(k));
+        RD.cache.delete(k);
+      }
+      return u;
+    });
+}
+
+function readPrefetch(i) {
+  [i + 1, i + 2].forEach(k => {
+    if (RD.on && k < RD.sents.length && !rdHas(RD.sents[k])) readUrl(k).catch(() => {});
+  });
+}
+
+/* double-buffer style: while paused/editing, refresh the read pane and pre-warm the
+   playhead neighbourhood so resume is instant. Debounced — stale work is the failure mode. */
+let idleT = null;
+function scheduleIdleRender() {
+  clearTimeout(idleT);
+  idleT = setTimeout(() => {
+    if (RD.playing) return;
+    if (RD.on && RD.dirty) {  // paused mid-edit: pane + playhead catch up now
+      readRebuild(); readRenderPane(); readShow();
+      [RD.idx, RD.idx + 1, RD.idx + 2].forEach(k => {
+        if (k < RD.sents.length && !rdHas(RD.sents[k])) readUrl(k).catch(() => {});
+      });
+    } else if (!RD.on && wtext.value !== RD.paneText) {  // stopped: pane mirrors the draft
+      readRebuild(); readRenderPane(); readShow();
+    }
+  }, 900);
+}
+
+function readRenderPane() {  // spans change only when the text does — not per step
+  const pane = $('wpane');
+  pane.innerHTML = RD.sents.length
+    ? RD.sents.map((s, i) => `<span class="sent" data-i="${i}">${esc(s)}</span> `).join('')
+    : '<span style="color:var(--pico-muted-color)">Write or paste your draft — the read-aloud view appears here.</span>';
+  RD.paneText = wtext.value;
+}
+
+function readShow() {  // O(1) per sentence: toggle two spans, scroll, counter
+  const pane = $('wpane');
+  if (!RD.sents.length) { readRenderPane(); $('wpos').textContent = ''; return; }
+  if (pane.children[RD.idx]?.dataset.i != RD.idx) readRenderPane();  // desynced (safety)
+  const prev = pane.querySelector('.on');
+  if (prev) prev.classList.remove('on');
+  if (RD.on) {
+    const cur = pane.children[RD.idx];
+    cur.classList.add('on');
+    cur.scrollIntoView({block: 'nearest'});
+  }
+  $('wpos').textContent = RD.on ? `${RD.idx + 1}/${RD.sents.length}` : '';
+}
+
+async function readPlay(i) {
+  const seq = ++RD.seq;
+  const wasOn = RD.on;
+  const rebuilt = RD.dirty;
+  if (RD.dirty) readRebuild();
+  if (!RD.sents.length) { readStop(); return; }
+  RD.idx = Math.max(0, Math.min(i, RD.sents.length - 1));
+  RD.on = RD.playing = true;
+  $('wplay').textContent = '⏸ pause';
+  stopPreview();
+  if (!wasOn || rebuilt) readRenderPane();
+  readShow();
+  readPrefetch(RD.idx);
+  try { raudio.src = await readUrl(RD.idx); } catch { if (RD.seq === seq) readPause(); return; }
+  if (RD.seq !== seq || !RD.on || !RD.playing) return;  // user moved on while the blob loaded
+  raudio.playbackRate = +$('wspeed').value;
+  raudio.play().catch(() => { toast('Playback failed', true); readStop(); });
+}
+
+function readPause() {
+  RD.playing = false;
+  raudio.pause();
+  $('wplay').textContent = '▶ play';
+  scheduleIdleRender();  // CPU is idle — pre-warm what's likely needed next
+}
+
+function readStop() {
+  RD.on = RD.playing = false;
+  raudio.pause();
+  for (const u of RD.cache.values()) URL.revokeObjectURL(u);
+  RD.cache.clear();
+  $('wplay').textContent = '▶ play';
+  $('wpos').textContent = '';
+  const prev = $('wpane').querySelector('.on');
+  if (prev) prev.classList.remove('on');
+}
+
+raudio.onended = () => {
+  if (!RD.on || !RD.playing) return;
+  RD.idx + 1 < RD.sents.length ? readPlay(RD.idx + 1) : readStop();
+};
+
+$('wplay').onclick = () => {
+  if (RD.on && RD.playing) return readPause();
+  if (RD.on) return readPlay(RD.idx);
+  if (!wtext.value.trim()) { toast('Nothing to read — write something first', true); return; }
+  readRebuild();
+  const before = splitSents(wtext.value.slice(0, wtext.selectionStart)).length;  // sentence under the cursor
+  readPlay(Math.max(0, before - 1));
+};
+$('wback').onclick = () => readPlay(RD.on ? RD.idx - 1 : 0);
+$('wfwd').onclick = () => readPlay(RD.on ? RD.idx + 1 : 0);
+$('wstop').onclick = readStop;
+$('wspeed').onchange = () => { raudio.playbackRate = +$('wspeed').value; };
+$('wpane').onclick = e => {
+  const s = e.target.closest('.sent');
+  if (s) readPlay(+s.dataset.i);
+};
+
+/* upload */
+$('copyfeed').onclick = e => {
   e.preventDefault();
   const url = location.origin + '/feed.xml';
   navigator.clipboard
-    ? navigator.clipboard.writeText(url).then(() => toast('RSS URL copied'), () => toast(url))
-    : toast(url);  // clipboard API needs a secure context; toast the URL as fallback
+    ? navigator.clipboard.writeText(url).then(() => toast('RSS URL copied'), () => toast(url, true))
+    : toast(url, true);  // clipboard API needs a secure context; toast the URL as fallback
 };
 
-drop.onclick = e => { if (!e.target.closest('select,label')) pick.click(); };
+drop.onclick = e => { if (!e.target.closest('select,label,button,input,a')) pick.click(); };
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick.click(); } };
 pick.onchange = () => { upload(pick.files); pick.value = ''; };
 ['dragover','dragleave','drop'].forEach(ev => document.addEventListener(ev, e => {
   e.preventDefault();
   drop.classList.toggle('over', ev === 'dragover');
 }));
 document.addEventListener('drop', e => { if (e.dataTransfer.files.length) upload(e.dataTransfer.files); });
-
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 4000);
-}
 
 function upload(files) {
   if (!files.length) return;
@@ -226,22 +661,41 @@ function upload(files) {
     if (xhr.status >= 400) {
       let msg = 'Upload failed';
       try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
-      toast(msg);
+      toast(msg, true);
+    } else {
+      let n = files.length;
+      try { n = JSON.parse(xhr.responseText).saved.length || n; } catch {}
+      toast(`Queued ${n} PDF${n > 1 ? 's' : ''}`);
     }
     refresh();
   };
-  xhr.onerror = () => { upbar.style.display = 'none'; toast('Upload failed'); };
+  xhr.onerror = () => { upbar.style.display = 'none'; toast('Upload failed', true); };
   xhr.send(fd);
 }
 
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const fmtDur = s => `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,'0')}`;
-
-/* playback positions survive page reloads */
-const pos = {
-  get: n => +localStorage.getItem('pr-pos:' + n) || 0,
-  set: (n, t) => localStorage.setItem('pr-pos:' + n, t),
+/* fetch a paper straight from a URL (arXiv abs pages rewrite server-side) */
+$('urlgo').onclick = async () => {
+  const url = $('urlbox').value.trim();
+  if (!url) return;
+  const btn = $('urlgo');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch('/api/upload-url', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, voice: voiceSel.value, mode: modeSel.value})});
+    if (r.status >= 400) toast(await errMsg(r, 'Fetch failed'), true);
+    else {
+      const d = await r.json();
+      toast(d.queued ? `Queued ${d.saved}` : `${d.saved} already exists`);
+      if (d.queued) $('urlbox').value = '';
+    }
+    refresh();
+  } catch { toast('Fetch failed', true); }
+  btn.disabled = false; btn.textContent = 'fetch';
 };
+$('urlbox').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('urlgo').click(); } };
+
+/* ---- card rendering ---- */
 
 function stepper(stage) {
   const idx = STAGES.findIndex(([s]) => s === stage);
@@ -264,11 +718,56 @@ function eta(j) {
   return left < 45 ? ' · <1 min left' : ` · ~${Math.ceil(left / 60)} min left`;
 }
 
+const isUnlistened = j => j.stage === 'done' && !j.archived && !pos.get(j.name);
+const delLabel = name => delPending.has(name) ? '⚠ confirm delete?' : '✕ delete';
+const delCls = name => delPending.has(name) ? ' danger' : '';
+
+function voiceOpts(sel) {  // clone the Voices-tab options, marking the active one
+  return [...$('voice').options].map(o =>
+    `<option value="${o.value}"${o.value === sel ? ' selected' : ''}>${o.textContent}</option>`).join('');
+}
+
+function menuHtml(j, items) {
+  return `<details class="menu"><summary title="more actions">⋯</summary><div class="panel">` +
+    items.map(([act, label]) => act === 'voice'
+      ? `<label class="vrow" title="re-render this paper in a different voice">🎙 <select class="voicesel">${voiceOpts(j.voice || voiceSel.value)}</select></label>`
+      : `<button data-act="${act}"${act === 'delete' ? ` class="${delCls(j.name).trim()}"` : ''}>${label}</button>`
+    ).join('') + `</div></details>`;
+}
+
+function actions(j) {
+  const enc = encodeURIComponent(j.name);
+  if (ACTIVE.has(j.stage)) return '';  // server 409s these while the worker owns the job
+  if (j.stage === 'failed')
+    return `<div class="row">
+      <button class="secondary" data-act="retry">↻ retry</button>
+      <button class="secondary outline${delCls(j.name)}" data-act="delete">${delLabel(j.name)}</button></div>`;
+  if (j.archived)
+    return `<div class="row">${menuHtml(j, [
+      ['unarchive', '🗂 unarchive'], ['rename', '✏️ rename'], ['tags', '🏷 edit tags'], ['delete', delLabel(j.name)]])}</div>`;
+  return `<div class="row">
+      <label>speed <select class="ratesel">
+        <option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option>
+      </select></label>
+      <a class="btn secondary" role="button" href="/view?name=${enc}" target="_blank" rel="noopener" title="read &amp; listen in a new tab">📖 read &amp; listen</a>
+      <a class="btn secondary" role="button" href="/api/audio/${enc}?dl=1">⬇ download</a>
+      ${menuHtml(j, [['voice'], ['rerender', '🔊 re-render'], ['archive', '🗃 archive'],
+                     ['rename', '✏️ rename'], ['tags', '🏷 edit tags'], ['delete', delLabel(j.name)]])}
+    </div>
+    <details class="sandbox" ontoggle="loadSum(this)"><summary>script</summary><p class="sum"></p></details>`;
+}
+
 function card(j) {
   const badgeCls = j.stage === 'done' ? 'done' : j.stage === 'failed' ? 'failed'
     : j.stage === 'queued' ? 'queued' : 'working';
-  let body = `<h3>${esc(j.title || j.name)}</h3><div class="meta">
-    <span class="badge ${badgeCls}">${esc(j.stage)}</span>`;
+  const canView = j.stage === 'done' && !j.archived;
+  let body = '';
+  if (!ACTIVE.has(j.stage))
+    body += `<input type="checkbox" class="sel" title="select"${selected.has(j.name) ? ' checked' : ''}>`;
+  body += canView
+    ? `<h3><a href="/view?name=${encodeURIComponent(j.name)}" target="_blank" rel="noopener" class="tlink" title="read &amp; listen (new tab)">${esc(j.title || j.name)}</a></h3>`
+    : `<h3>${esc(j.title || j.name)}</h3>`;
+  body += `<div class="meta"><span class="badge ${badgeCls}">${esc(j.stage)}</span>`;
   if (j.authors) body += `<span>✍ ${esc(j.authors)}</span>`;
   if (j.title) body += `<span class="fname">📄 ${esc(j.name)}</span>`;
   if (j.detail && j.stage !== 'done') body += `<span>${esc(j.detail)}${eta(j)}</span>`;
@@ -277,24 +776,22 @@ function card(j) {
   if (j.mode === 'verbatim') body += `<span class="dur" title="read exactly as written, no LLM">📖 verbatim</span>`;
   body += '</div>';
   body += `<div class="tagsrow">` + (j.tags || []).map(t =>
-    `<span class="badge tag" title="click to search" onclick="tagSearch(this.textContent)">${esc(t)}</span>`).join('') + `</div>`;
+    `<button class="badge tag" data-act="filter" data-tag="${esc(t)}" title="filter by this tag">${esc(t)}</button>`).join('') + `</div>`;
   if (j.stage !== 'failed') body += stepper(j.stage);
   if (ACTIVE.has(j.stage) && j.stage !== 'queued')
     body += `<progress class="working" value="${j.progress || 0}" max="100"></progress>`;
   if (j.stage === 'failed')
     body += `<p class="error">⚠ ${esc(j.error || 'unknown error')}</p>`;
-  if (j.stage === 'done' && !j.archived)  // /api/audio serves output/ only
-    body += `<audio controls preload="none" src="/api/audio/${encodeURIComponent(j.name)}"></audio>
-      <div class="row">
-        <label>speed <select onchange="setRate(this)">
-          <option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option>
-        </select></label>
-        <a class="btn secondary" role="button" href="/api/audio/${encodeURIComponent(j.name)}?dl=1">⬇ download</a>
-      </div>
-      <details class="sandbox" ontoggle="loadSum(this)"><summary>script</summary><p class="sum"></p></details>`;
+  if (canView) {
+    const heard = pos.get(j.name);
+    if (heard && j.duration && heard / j.duration >= 0.01)
+      body += `<div class="heard" title="listened ${fmtDur(heard)} of ${fmtDur(j.duration)}"><div style="width:${Math.min(100, heard / j.duration * 100)}%"></div></div>`;
+    // /api/audio serves output/ only
+    body += `<audio controls preload="none" src="/api/audio/${encodeURIComponent(j.name)}"></audio>`;
+  }
+  body += actions(j);
   return `<div class="card" data-name="${esc(j.name)}">${body}</div>`;
 }
-
 /* first sentences of the narration script, fetched on demand */
 async function loadSum(d) {
   if (d.dataset.loaded || !d.open) return;
@@ -308,118 +805,319 @@ async function loadSum(d) {
   d.dataset.loaded = 1;
 }
 
-function buttons(j) {
-  const enc = encodeURIComponent(j.name);
-  let b = '<div class="row">';
-  if (j.stage === 'failed')
-    b += `<button class="secondary" onclick="retry('${enc}')">↻ retry</button>`;
-  if (j.stage === 'done' && !j.archived)
-    b += `<button class="secondary" title="read the PDF while listening"
-       onclick="viewPdf('${enc}')">📖 read &amp; listen</button>`;
-  if (j.stage === 'done' && !j.archived)
-    b += `<button class="secondary" title="re-run TTS with the voice selected above (script is cached)"
-       onclick="rerender('${enc}')">🔊 re-render</button>`;
-  if (j.stage === 'done' && !j.archived)
-    b += `<button class="secondary" onclick="arch('${enc}', false)">🗃 archive</button>`;
-  if (j.archived)
-    b += `<button class="secondary" onclick="arch('${enc}', true)">🗂 unarchive</button>`;
-  if (!ACTIVE.has(j.stage))  // server 409s these while the worker owns the job
-    b += `<button class="secondary" onclick="editMeta('${enc}', 'tags')">🏷 tags</button>
-      <button class="secondary" onclick="editMeta('${enc}', 'title')">✏️ rename</button>
-      <button class="secondary outline" onclick="del('${enc}')">✕ delete</button>`;
-  return b + '</div>';
+/* ---- actions (all reach here via event delegation) ---- */
+
+function doAct(act, name, btn) {
+  switch (act) {
+    case 'retry':     retry(name); break;
+    case 'rerender':  rerender(name); break;
+    case 'archive':   arch(name, false); break;
+    case 'unarchive': arch(name, true); break;
+    case 'delete':    del(name); break;
+    case 'rename':    startEdit(name, 'title'); break;
+    case 'tags':      startEdit(name, 'tags'); break;
+    case 'filter':    activeFilter = activeFilter === btn.dataset.tag ? null : btn.dataset.tag; render(); break;
+    case 'playlist':  togglePlaylist(); break;
+  }
 }
 
-let jobsCache = [];
+async function arch(name, undo) {
+  const r = await fetch(`/api/archive/${encodeURIComponent(name)}${undo ? '?undo=1' : ''}`, {method: 'POST'});
+  toast(r.status >= 400 ? await errMsg(r, 'Archive failed') : (undo ? `Unarchived ${name}` : `Archived ${name}`), r.status >= 400);
+  refresh();
+}
 
-function tagSearch(t) {
-  searchBox.value = t;
+async function retry(name) {
+  await fetch('/api/retry/' + encodeURIComponent(name), {method: 'POST'});
+  toast('Re-queued ' + name);
+  refresh();
+}
+
+async function del(name) {
+  if (!delPending.has(name)) {  // two-tap: first tap arms, second deletes
+    delPending.add(name);
+    updatedelbtns();
+    setTimeout(() => { delPending.delete(name); updatedelbtns(); }, 3000);
+    return;
+  }
+  delPending.delete(name);
+  selected.delete(name);
+  const r = await fetch('/api/delete/' + encodeURIComponent(name), {method: 'POST'});
+  toast(r.status >= 400 ? 'Delete failed' : `Deleted ${name}`, r.status >= 400);
+  refresh();
+}
+
+function rerender(name) {
+  const j = jobsCache.find(x => x.name === name) || {};
+  const modeChange = (j.mode || 'summary') !== modeSel.value;
+  const note = modeChange
+    ? `\nmode: ${j.mode || 'summary'} → ${modeSel.value} — the script will be regenerated${modeSel.value === 'summary' ? ' (LLM re-run, a few minutes)' : ''}`
+    : '\n(narration script is cached — only the audio is re-made)';
+  if (!confirm(`Re-render "${name}" with voice "${voiceSel.value}"?${note}`)) return;
+  fetch(`/api/rerender/${encodeURIComponent(name)}?voice=${encodeURIComponent(voiceSel.value)}&mode=${encodeURIComponent(modeSel.value)}`, {method: 'POST'})
+    .then(async r => toast(r.status >= 400 ? await errMsg(r, 'Re-render failed') : 'Queued for re-render', r.status >= 400))
+    .then(refresh);
+}
+
+/* inline title/tag editing (native prompt() replacement). While the .editing
+   input lives in #jobs, uiBusy() defers poll re-renders so typing survives. */
+function startEdit(name, field) {
+  const cardEl = jobsEl.querySelector(`.card[data-name="${CSS.escape(name)}"]`);
+  const host = cardEl && cardEl.querySelector(field === 'tags' ? '.tagsrow' : 'h3');
+  if (!host) return;
+  const cur = jobsCache.find(x => x.name === name) || {};
+  const val = field === 'tags' ? (cur.tags || []).join(', ') : (cur.title || name);
+  host.innerHTML = `<input class="inlineedit editing" value="${esc(val)}" aria-label="${field}">`;
+  const input = host.querySelector('input');
+  input.focus(); input.select();
+  let settled = false;
+  const commit = save => {
+    if (settled) return;
+    settled = true;
+    if (!save) { render(); return; }
+    const body = field === 'tags'
+      ? {tags: input.value.split(',').map(s => s.trim()).filter(Boolean)}
+      : {title: input.value.trim()};
+    saveMeta(name, body, field);
+  };
+  input.onkeydown = e => {
+    if (e.key === 'Enter') commit(true);
+    if (e.key === 'Escape') commit(false);
+  };
+  input.onblur = () => commit(true);
+}
+async function saveMeta(name, body, field) {
+  if (field === 'title' && !body.title) { render(); return; }
+  const r = await fetch('/api/meta/' + encodeURIComponent(name), {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (r.status >= 400) { toast(await errMsg(r, 'Edit failed'), true); refresh(); return; }
+  const j = jobsCache.find(x => x.name === name);
+  if (j) Object.assign(j, body);
+  toast('Saved');
   render();
 }
 
-/* speed persists per card across re-renders and reloads */
-function setRate(sel) {
-  const card = sel.closest('.card');
-  card.querySelector('audio').playbackRate = +sel.value;
-  localStorage.setItem('pr-rate:' + card.dataset.name, sel.value);
+/* two-tap delete for the bulk bar */
+function updatedelbtns() {
+  jobsEl.querySelectorAll('[data-act="delete"]').forEach(b => {
+    const name = b.closest('[data-name]').dataset.name;
+    b.textContent = delLabel(name);
+    b.classList.toggle('danger', delPending.has(name));
+  });
+  updateBulkbar();
 }
 
-function applyRate(a) {
-  const card = a.closest('.card');
-  const name = card.dataset.name;
-  const r = localStorage.getItem('pr-rate:' + name);
-  const sel = card.querySelector('.row select');
-  if (r) {
-    a.defaultPlaybackRate = +r; a.playbackRate = +r;
-    if (sel && [...sel.options].some(o => o.value === r)) sel.value = r;
-  }
+/* playlist: chain unlistened episodes in rendered order */
+function togglePlaylist() {
+  if (playlistOn) { playlistOn = false; toast('Playlist stopped'); render(); return; }
+  const un = renderedLib.filter(n => isUnlistened(jobsCache.find(x => x.name === n) || {}));
+  if (!un.length) { toast('Nothing unlistened', true); return; }
+  playlistOn = true;
+  playlistQueue = un;
+  render();
+  playPlaylistAt(0);
 }
+function playPlaylistAt(i) {
+  if (!playlistOn) return;
+  for (; i < playlistQueue.length; i++) {
+    if (!isUnlistened(jobsCache.find(x => x.name === playlistQueue[i]) || {})) continue;
+    const a = jobsEl.querySelector(`.card[data-name="${CSS.escape(playlistQueue[i])}"] audio`);
+    if (!a) continue;
+    a.scrollIntoView({behavior: 'smooth', block: 'center'});
+    a.play().catch(() => { playlistOn = false; render(); });
+    return;
+  }
+  playlistOn = false;
+  toast('Playlist finished');
+  render();
+}
+document.addEventListener('ended', e => {
+  if (!(e.target instanceof HTMLAudioElement)) return;
+  const cardEl = e.target.closest('.card');
+  if (!cardEl) return;
+  const name = cardEl.dataset.name;
+  pos.set(name, 0);
+  if (playlistOn) playPlaylistAt(playlistQueue.indexOf(name) + 1);
+}, true);  // 'ended' doesn't bubble — capture it
+document.addEventListener('pause', e => {
+  // a manual pause of the currently-chained card player stops the chain
+  if (!playlistOn || !(e.target instanceof HTMLAudioElement)) return;
+  const cardEl = e.target.closest('.card');
+  if (cardEl && playlistQueue.includes(cardEl.dataset.name)) { playlistOn = false; render(); }
+}, true);
+
+/* bulk archive/delete */
+function updateBulkbar() {
+  $('bulkcount').textContent = `${selected.size} selected`;
+  bulkbar.hidden = selected.size === 0;
+  const delBtn = $('bulkdel');
+  delBtn.textContent = bulkDelArmed ? '⚠ confirm delete?' : '✕ delete';
+  delBtn.classList.toggle('danger', bulkDelArmed);
+}
+$('bulkclear').onclick = () => { selected.clear(); updatedelbtns(); render(); };
+$('bulkarch').onclick = async () => {
+  const names = [...selected];
+  selected.clear();
+  await Promise.all(names.map(n => fetch(`/api/archive/${encodeURIComponent(n)}`, {method: 'POST'})));
+  toast(`Archived ${names.length} paper${names.length > 1 ? 's' : ''}`);
+  updateBulkbar();
+  refresh();
+};
+$('bulkdel').onclick = async () => {
+  if (!bulkDelArmed) {
+    bulkDelArmed = true;
+    updateBulkbar();
+    setTimeout(() => { bulkDelArmed = false; updateBulkbar(); }, 3000);
+    return;
+  }
+  bulkDelArmed = false;
+  const names = [...selected];
+  selected.clear();
+  await Promise.all(names.map(n => fetch(`/api/delete/${encodeURIComponent(n)}`, {method: 'POST'})));
+  toast(`Deleted ${names.length} paper${names.length > 1 ? 's' : ''}`);
+  updateBulkbar();
+  refresh();
+};
+/* ---- rendering, polling ---- */
+
+const matches = (j, needle) =>
+  [j.title, j.name, j.authors, ...(j.tags || [])].join(' ').toLowerCase().includes(needle);
+
+function renderFilters() {
+  const el = $('filters');
+  const counts = {};
+  jobsCache.forEach(j => (j.tags || []).forEach(t => counts[t] = (counts[t] || 0) + 1));
+  const un = jobsCache.filter(isUnlistened).length;
+  const chip = (key, label) =>
+    `<button class="chip${activeFilter === key ? ' on' : ''}" data-f="${esc(key)}">${esc(label)}</button>`;
+  let h = '';
+  if (un && activeFilter !== 'unlistened') h += chip('unlistened', `⏯ unlistened ${un}`);
+  h += Object.keys(counts).sort().map(t => chip(t, `${t} ${counts[t]}`)).join('');
+  if (activeFilter === 'unlistened') h = chip('unlistened', `⏯ unlistened ${un}`) + h;
+  if (activeFilter && activeFilter !== 'unlistened')
+    h += `<a class="chip" href="/feed.xml?tag=${encodeURIComponent(activeFilter)}"
+      title="podcast feed of just this tag">📡 feed: ${esc(activeFilter)}</a>`;
+  if (activeFilter) h += `<button class="chip" data-f="" title="clear filter">✕ clear</button>`;
+  el.innerHTML = h;
+}
+$('filters').addEventListener('click', e => {
+  const b = e.target.closest('[data-f]');
+  if (!b) return;
+  const f = b.dataset.f;
+  activeFilter = !f || activeFilter === f ? null : f;
+  render();
+});
 
 /* poll re-renders the DOM: snapshot audio state first so playback survives */
 function snapshotAudio() {
   const m = {};
   document.querySelectorAll('.card audio').forEach(a => {
-    const n = a.closest('.card').dataset.name;
-    m[n] = { t: a.currentTime, paused: a.paused, rate: a.playbackRate };
+    m[a.closest('.card').dataset.name] = { t: a.currentTime, paused: a.paused, rate: a.playbackRate };
   });
   return m;
 }
-
 function restoreAudio(snap) {
   document.querySelectorAll('.card audio').forEach(a => {
     const name = a.closest('.card').dataset.name;
     const s = snap[name];
     const t = s ? s.t : pos.get(name);
     if (t) a.addEventListener('loadedmetadata', () => a.currentTime = t);
-    applyRate(a);
+    if (s && s.rate) { a.defaultPlaybackRate = s.rate; a.playbackRate = s.rate; }
+    else applyRate(a);
     if (s && !s.paused) a.play().catch(() => {});  // autoplay policy may refuse; position still kept
-    a.addEventListener('ended', () => pos.set(name, 0));
   });
 }
-
-function matches(j, needle) {
-  return [j.title, j.name, j.authors, ...(j.tags || [])].join(' ').toLowerCase().includes(needle);
+function applyRate(a) {
+  const cardEl = a.closest('.card');
+  const r = localStorage.getItem('pr-rate:' + cardEl.dataset.name);
+  const sel = cardEl.querySelector('.ratesel');
+  if (r) {
+    a.defaultPlaybackRate = +r; a.playbackRate = +r;
+    if (sel && [...sel.options].some(o => o.value === r)) sel.value = r;
+  }
+}
+function setRate(sel) {
+  const cardEl = sel.closest('.card');
+  cardEl.querySelector('audio').playbackRate = +sel.value;
+  localStorage.setItem('pr-rate:' + cardEl.dataset.name, sel.value);
+}
+async function setVoice(sel) {
+  const name = sel.closest('.card').dataset.name;
+  sel.disabled = true;
+  const r = await fetch(`/api/rerender/${encodeURIComponent(name)}?voice=${encodeURIComponent(sel.value)}`,
+                        {method: 'POST'});
+  toast(r.status >= 400 ? await errMsg(r, 'Re-render failed')
+                        : `Re-rendering with ${sel.selectedOptions[0].textContent}…`, r.status >= 400);
+  sel.disabled = false;
 }
 
+/* don't re-render under the user's hands: open menus and inline edits defer it */
+const uiBusy = () => !!document.querySelector('#jobs details.menu[open], #jobs .editing');
+
 function render() {
+  if (uiBusy()) { renderPending = true; return; }
+  renderPending = false;
   const snap = snapshotAudio();
   const needle = searchBox.value.trim().toLowerCase();
-  const jobs = needle ? jobsCache.filter(j => matches(j, needle)) : jobsCache;
+  const pass = j => (!activeFilter || (activeFilter === 'unlistened' ? isUnlistened(j) : (j.tags || []).includes(activeFilter)))
+                 && (!needle || matches(j, needle));
+  const jobs = jobsCache.filter(pass);
   const queue = jobs.filter(j => !j.archived && j.stage !== 'done');
-  const lib   = jobs.filter(j => !j.archived && j.stage === 'done')
-                    .sort((a, b) => (b.updated || 0) - (a.updated || 0));
-  const arch  = jobs.filter(j =>  j.archived);
-  const el = document.getElementById('jobs');
+  const lib = jobs.filter(j => !j.archived && j.stage === 'done');
+  if (sortMode === 'title') lib.sort((a, b) => (a.title || a.name).localeCompare(b.title || b.name));
+  else if (sortMode === 'duration') lib.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+  else lib.sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  renderedLib = lib.map(j => j.name);
+  const arch = jobs.filter(j => j.archived);
   if (!jobsCache.length) {
-    el.innerHTML = '<p class="empty">No papers yet — drop one above.</p>';
+    jobsEl.innerHTML = '<p class="empty">No papers yet — drop one above.</p>';
   } else if (!jobs.length) {
-    el.innerHTML = `<p class="empty">No matches for “${esc(needle)}”.</p>`;
+    jobsEl.innerHTML = `<p class="empty">No matches${needle ? ` for “${esc(needle)}”` : ''}.</p>`;
   } else {
     let html = '';
     if (queue.length)
-      html += `<p class="group">⏳ Queue (${queue.length})</p>` + queue.map(j => card(j) + buttons(j)).join('');
+      html += `<div class="group"><span>⏳ Queue (${queue.length})</span></div>` + queue.map(card).join('');
     if (lib.length) {
       const secs = lib.reduce((s, j) => s + (j.duration || 0), 0);
       const h = Math.floor(secs / 3600), m = Math.round(secs % 3600 / 60);
-      const total = secs ? ` <span class="total">— ${h ? h + 'h ' : ''}${m}m of audio</span>` : '';
-      html += `<p class="group">🎧 Library (${lib.length})${total}</p>` + lib.map(j => card(j) + buttons(j)).join('');
+      const un = lib.filter(isUnlistened).length;
+      const total = secs ? ` <span class="total">— ${h ? h + 'h ' : ''}${m}m of audio · ${un} unlistened</span>` : '';
+      const plBtn = playlistOn
+        ? `<button class="mini secondary" data-act="playlist">⏹ stop playlist</button>`
+        : (un ? `<button class="mini secondary" data-act="playlist">▶ play unlistened (${un})</button>` : '');
+      html += `<div class="group"><span>🎧 Library (${lib.length})${total}</span>
+        <span class="groupside">${plBtn}
+          <label>sort <select id="sortsel" class="mini">
+            <option value="recent"${sortMode === 'recent' ? ' selected' : ''}>recent</option>
+            <option value="title"${sortMode === 'title' ? ' selected' : ''}>title</option>
+            <option value="duration"${sortMode === 'duration' ? ' selected' : ''}>longest</option>
+          </select></label></span></div>` + lib.map(card).join('');
     }
     if (arch.length)
-      html += `<details class="groupbox"><summary>🗃 Archived (${arch.length})</summary>` +
-              arch.map(j => card(j) + buttons(j)).join('') + '</details>';
-    el.innerHTML = html;
+      html += `<details class="groupbox"${localStorage.getItem('pr-archopen') === '1' ? ' open' : ''}><summary>🗃 Archived (${arch.length})</summary>` +
+              arch.map(card).join('') + '</details>';
+    jobsEl.innerHTML = html;
   }
   restoreAudio(snap);
+  renderFilters();
+  updateBulkbar();
+  renderFeeds();
 }
 
 async function refresh() {
-  try {
-    jobsCache = await (await fetch('/api/jobs')).json();
-  } catch { return schedule(); }
+  let fresh;
+  try { fresh = await (await fetch('/api/jobs')).json(); }
+  catch { return schedule(); }
+  if (!firstLoad && notifyOn)
+    for (const j of fresh)
+      if (j.stage === 'done' && prevStages[j.name] && prevStages[j.name] !== 'done')
+        new Notification('Paper Reader', {body: `${j.title || j.name} is ready to listen`});
+  firstLoad = false;
+  fresh.forEach(j => { prevStages[j.name] = j.stage; });
+  jobsCache = fresh;
   render();
   schedule();
 }
-
 function schedule() {
   const busy = jobsCache.some(j => ACTIVE.has(j.stage));
   setTimeout(refresh, busy ? 2000 : 10000);
@@ -428,81 +1126,92 @@ function schedule() {
 setInterval(() => {
   document.querySelectorAll('.card audio').forEach(a =>
     pos.set(a.closest('.card').dataset.name, a.currentTime));
-  if (!viewer.hidden && viewer.dataset.name) pos.set(viewer.dataset.name, vaudio.currentTime);
 }, 2000);
 
-/* viewer: open the PDF beside its audio, resuming where the card player left off */
-const viewer = document.getElementById('viewer');
-const vpdf = document.getElementById('vpdf');
-const vaudio = document.getElementById('vaudio');
-
-function viewPdf(name) {
-  const j = jobsCache.find(x => x.name === decodeURIComponent(name)) || {};
-  viewer.dataset.name = j.name;
-  document.getElementById('vtitle').textContent = j.title || j.name || '';
-  vpdf.src = '/api/pdf/' + name;
-  vaudio.src = '/api/audio/' + name;
-  const t = pos.get(j.name);
-  if (t) vaudio.addEventListener('loadedmetadata', () => vaudio.currentTime = t, {once: true});
-  viewer.hidden = false;
-  viewer.scrollIntoView({behavior: 'smooth'});
-  vaudio.play().catch(() => {});  // user clicked; usually allowed, ignore policy refusals
-}
-
-document.getElementById('vclose').onclick = () => {
-  vaudio.pause();
-  if (viewer.dataset.name) pos.set(viewer.dataset.name, vaudio.currentTime);
-  vaudio.removeAttribute('src'); vaudio.load();
-  vpdf.src = 'about:blank';
-  viewer.hidden = true;
-  viewer.dataset.name = '';
-};
-
-async function del(name) {
-  if (!confirm(`Delete ${decodeURIComponent(name)} and its files?`)) return;
-  await fetch('/api/delete/' + name, {method: 'POST'});
-  refresh();
-}
-
-async function arch(name, undo) {
-  await fetch('/api/archive/' + name + (undo ? '?undo=1' : ''), {method: 'POST'});
-  refresh();
-}
-
-async function retry(name) {
-  await fetch('/api/retry/' + name, {method: 'POST'});
-  refresh();
-}
-
-async function rerender(name) {
-  const j = jobsCache.find(x => x.name === decodeURIComponent(name)) || {};
-  const modeChange = (j.mode || 'summary') !== modeSel.value;
-  const note = modeChange
-    ? `\nmode: ${j.mode || 'summary'} → ${modeSel.value} — the script will be regenerated${modeSel.value === 'summary' ? ' (LLM re-run, a few minutes)' : ''}`
-    : '\n(narration script is cached — only the audio is re-made)';
-  if (!confirm(`Re-render "${decodeURIComponent(name)}" with voice "${voiceSel.value}"?${note}`)) return;
-  const r = await fetch(`/api/rerender/${name}?voice=${encodeURIComponent(voiceSel.value)}&mode=${encodeURIComponent(modeSel.value)}`, {method: 'POST'});
-  if (r.status >= 400) toast(JSON.parse(await r.text()).detail || 'Re-render failed');
-  refresh();
-}
-
-async function editMeta(name, field) {
-  const cur = jobsCache.find(x => x.name === decodeURIComponent(name)) || {};
-  let body;
-  if (field === 'tags') {
-    const v = prompt('Tags (comma-separated):', (cur.tags || []).join(', '));
-    if (v === null) return;
-    body = {tags: v.split(',').map(s => s.trim()).filter(Boolean)};
-  } else {
-    const v = prompt('Display title:', cur.title || cur.name || '');
-    if (v === null || !v.trim()) return;
-    body = {title: v.trim()};
+/* event delegation for every card action */
+jobsEl.addEventListener('click', e => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  e.preventDefault();
+  const act = btn.dataset.act;
+  const name = btn.closest('[data-name]')?.dataset.name;
+  if (!name && act !== 'playlist') return;  // playlist button lives in the group header
+  if (act !== 'delete') {  // delete stays open so the second tap lands on it
+    const m = btn.closest('details.menu');
+    if (m) m.open = false;
   }
-  const r = await fetch('/api/meta/' + name, {method: 'POST',
-    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-  if (r.status >= 400) toast(JSON.parse(await r.text()).detail || 'Edit failed');
-  refresh();
+  doAct(act, name, btn);
+});
+jobsEl.addEventListener('change', e => {
+  const t = e.target;
+  if (t.matches('.sel')) {
+    const name = t.closest('.card').dataset.name;
+    t.checked ? selected.add(name) : selected.delete(name);
+    updateBulkbar();
+  } else if (t.matches('.ratesel')) setRate(t);
+  else if (t.matches('.voicesel')) setVoice(t);
+  else if (t.id === 'sortsel') { sortMode = t.value; localStorage.setItem('pr-sort', t.value); render(); }
+});
+jobsEl.addEventListener('toggle', e => {
+  if (e.target.matches('details.menu')) {
+    if (!e.target.open && renderPending) render();
+  } else if (e.target.matches('details.groupbox')) {
+    localStorage.setItem('pr-archopen', e.target.open ? '1' : '0');
+  }
+}, true);  // toggle doesn't bubble — capture it
+
+/* clicking anywhere else closes open menus */
+document.addEventListener('click', e => {
+  document.querySelectorAll('#jobs details.menu[open]').forEach(d => {
+    if (!d.contains(e.target)) d.open = false;
+  });
+});
+
+/* ---- in-app tabs: Library · Voices · Feeds ---- */
+const TABS = ['library', 'write', 'voices', 'feeds'];
+function showTab(t) {
+  TABS.forEach(x => { $('tab-' + x).hidden = x !== t; });
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  localStorage.setItem('pr-tab', t);
+  if (t === 'feeds') renderFeeds();
 }
+document.querySelector('.tabs').addEventListener('click', e => {
+  const b = e.target.closest('[data-tab]');
+  if (b) showTab(b.dataset.tab);
+});
+document.addEventListener('click', e => {  // "change in Voices tab"-style cross links
+  const g = e.target.closest('[data-goto]');
+  if (g) { e.preventDefault(); showTab(g.dataset.goto); }
+});
+
+function updateDefaults() {
+  const v = voiceSel.options[voiceSel.selectedIndex]?.textContent || voiceSel.value;
+  const m = modeSel.options[modeSel.selectedIndex]?.textContent || modeSel.value;
+  $('defaultsline').innerHTML = `🎙 ${esc(v)} · ${esc(m)} — <a href="#" data-goto="voices">change in the Voices tab</a>`;
+}
+
+function renderFeeds() {
+  const counts = {};
+  jobsCache.forEach(j => (j.tags || []).forEach(t => { counts[t] = (counts[t] || 0) + 1; }));
+  const row = (label, path) =>
+    `<div class="feedrow"><span class="t">${label}</span><code>${location.origin}${path}</code>` +
+    `<button class="mini secondary" data-copy="${esc(path)}">copy URL</button></div>`;
+  $('feedrows').innerHTML = row('📡 all papers', '/feed.xml')
+    + Object.keys(counts).sort().map(t =>
+        row(`🏷 ${esc(t)} (${counts[t]})`, `/feed.xml?tag=${encodeURIComponent(t)}`)).join('');
+}
+$('feedrows').addEventListener('click', e => {
+  const b = e.target.closest('[data-copy]');
+  if (!b) return;
+  const url = location.origin + b.dataset.copy;
+  navigator.clipboard
+    ? navigator.clipboard.writeText(url).then(() => toast('Feed URL copied'), () => toast(url, true))
+    : toast(url, true);
+});
+
+updateDefaults();
+renderFeeds();
+showTab(localStorage.getItem('pr-tab') || 'library');
 refresh();
 </script>
 </body>

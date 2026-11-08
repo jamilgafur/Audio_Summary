@@ -1,4 +1,5 @@
 """Web layer: UI serving + upload validation. No LLM (mocked), no worker threads."""
+
 import json
 import os
 import tempfile
@@ -9,9 +10,9 @@ _td = tempfile.mkdtemp()
 os.environ["INPUT_DIR"] = os.path.join(_td, "in")
 os.environ["OUTPUT_DIR"] = os.path.join(_td, "out")
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402  (env above must land first)
 
-from main import app
+from main import app  # noqa: E402
 
 client = TestClient(app)  # no `with`: lifespan threads stay off
 
@@ -49,9 +50,14 @@ def test_tts_splitter_respects_max_chars():
 def test_llm_gpu_oom_falls_back_to_cpu(monkeypatch):
     """VRAM taken by a resident service -> narrate on CPU instead of failing the job."""
     import huggingface_hub
-    import llama_cpp
+    import pytest
 
     import narrate
+
+    try:
+        import llama_cpp
+    except Exception as e:  # CUDA-built libllama won't even load without a driver
+        pytest.skip(f"llama_cpp not loadable here: {e}")
 
     layers_tried = []
 
@@ -59,7 +65,7 @@ def test_llm_gpu_oom_falls_back_to_cpu(monkeypatch):
         def __init__(self, model_path=None, n_ctx=None, n_gpu_layers=None, verbose=None):
             layers_tried.append(n_gpu_layers)
             if n_gpu_layers != 0:
-                raise RuntimeError("Failed to create llama_context")
+                raise RuntimeError("Vulkan: No/-1 devices found")  # what a contested box actually raises
 
         def create_chat_completion(self, messages=None, temperature=None, max_tokens=None):
             return {"choices": [{"message": {"content": "spoken words."}}]}
@@ -152,28 +158,49 @@ def test_ui_served_without_tables():
     assert r.status_code == 200
     assert 'id="drop"' in r.text
     assert "<table" not in r.text.lower()  # readability: card layout only
+    assert 'data-tab="feeds"' in r.text  # in-app tabs: Library / Write / Voices / Feeds
+    assert 'data-tab="write"' in r.text  # draft scratchpad with instant listen
+    assert 'id="wvoice"' in r.text  # Write tab has its own voice control
+    assert 'id="wpane"' in r.text and 'id="wplay"' in r.text  # read-aloud transport + highlight pane
+    assert 'id="wsplit"' in r.text  # side-by-side read-view | editor
+    assert 'class="voicesel"' in r.text  # per-paper voice in the card menu
+    assert 'id="vpdf"' not in r.text  # the reader lives in its own tab now
 
 
-def test_serve_pdf_inline_for_viewer():
-    """The read & listen viewer needs the PDF inline (not as a download)."""
+def test_view_page_served():
+    r = client.get("/view")
+    assert r.status_code == 200
+    assert 'id="vpdf"' in r.text and 'id="vedit"' in r.text
+    assert 'id="vvoice"' in r.text  # reader voice drives preview and save & re-render
+    assert "<table" not in r.text.lower()
+
+
+def test_serve_source_inline_for_viewer():
+    """The read & listen viewer needs the source inline (not as a download)."""
     import main
 
     out = Path(main.pipeline.output_dir)
     (out / "readable.pdf").write_bytes(b"%PDF-1.4 fake")
+    (out / "readable-txt.txt").write_text("plain notes")
     try:
-        r = client.get("/api/pdf/readable")
+        r = client.get("/api/source/readable")
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("application/pdf")
         assert "attachment" not in r.headers.get("content-disposition", "")
         assert r.content == b"%PDF-1.4 fake"
-        assert client.get("/api/pdf/unknown-job").status_code == 404
+        r = client.get("/api/source/readable-txt")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/plain")
+        assert client.get("/api/source/unknown-job").status_code == 404
     finally:
         (out / "readable.pdf").unlink(missing_ok=True)
+        (out / "readable-txt.txt").unlink(missing_ok=True)
 
 
 def test_pico_css_is_local():
     r = client.get("/static/pico.min.css")
     assert r.status_code == 200 and len(r.content) > 10_000
+
 
 def test_verbatim_script_is_exact_text_no_llm():
     import narrate
@@ -195,9 +222,9 @@ def test_verbatim_script_is_exact_text_no_llm():
 
 
 def test_upload_rejects_non_pdf():
-    r = client.post("/api/upload", files={"files": ("notes.txt", b"hello")})
+    r = client.post("/api/upload", files={"files": ("video.mp4", b"hello")})
     assert r.status_code == 400
-    assert "PDFs only" in r.json()["detail"]
+    assert "supported types" in r.json()["detail"]
 
 
 def test_upload_pdf_registers_job():
@@ -237,8 +264,7 @@ def test_feed_shows_paper_title():
     out = Path(main.pipeline.output_dir)
     (out / "titled-one.mp3").write_bytes(b"mp3")
     (out / "titled-one.status.json").write_text(
-        '{"stage":"done","title":"Walrus: A Cross-Domain Foundation Model",'
-        '"authors":"Michael McCabe","duration":905}'
+        '{"stage":"done","title":"Walrus: A Cross-Domain Foundation Model","authors":"Michael McCabe","duration":905}'
     )
     try:
         r = client.get("/feed.xml")
@@ -507,3 +533,395 @@ def test_archive_roundtrip():
     finally:
         for suffix in (".mp3", ".script.txt", ".status.json", ".pdf"):
             (out / ("arctest" + suffix)).unlink(missing_ok=True)
+
+
+def test_find_source_matches_handdropped_raw_name():
+    """A hand-dropped "Café (draft).pdf" must be findable under its safe stem."""
+    import main
+
+    raw = Path(main.pipeline.input_dir) / "Café (draft).pdf"
+    raw.write_bytes(b"%PDF-1.4 fake")
+    try:
+        assert main.pipeline.find_source("Café draft") == raw
+    finally:
+        raw.unlink(missing_ok=True)
+
+
+def test_delete_removes_handdropped_raw_named_pdf():
+    """Deleting a failed special-char job must not leave the PDF for the watcher
+    to re-queue — that resurrected the job forever."""
+    import main
+
+    p = main.pipeline
+    raw = Path(p.input_dir) / "My Paper (draft).pdf"
+    raw.write_bytes(b"%PDF-1.4 fake")
+    sp = p.status_path("My Paper draft")
+    sp.write_text('{"stage":"failed","error":"scanned"}')
+    try:
+        r = client.post("/api/delete/My Paper draft")
+        assert r.status_code == 200
+        assert not raw.exists()
+        assert list(Path(p.input_dir).glob("My Paper*")) == []
+    finally:
+        raw.unlink(missing_ok=True)
+        sp.unlink(missing_ok=True)
+
+
+def test_serve_source_finds_handdropped_raw_name():
+    import main
+
+    raw = Path(main.pipeline.input_dir) / "My Paper (draft).pdf"
+    raw.write_bytes(b"%PDF-1.4 fake")
+    try:
+        r = client.get("/api/source/My Paper draft")
+        assert r.status_code == 200 and r.content == b"%PDF-1.4 fake"
+    finally:
+        raw.unlink(missing_ok=True)
+
+
+def test_upload_accepts_txt_and_rejects_unknown_extension():
+    r = client.post("/api/upload", files={"files": ("notes.txt", b"just some notes " * 40)})
+    assert r.status_code == 200
+    assert r.json()["saved"] == ["notes.txt"]
+    r = client.post("/api/upload", files={"files": ("slides.pptx", b"nope")})
+    assert r.status_code == 400
+    assert "supported types" in r.json()["detail"]
+    import main
+
+    (Path(main.pipeline.input_dir) / "notes.txt").unlink(missing_ok=True)
+    main.pipeline.status_path("notes").unlink(missing_ok=True)
+    while not main.pipeline.q.empty():
+        main.pipeline.q.get_nowait()
+
+
+def test_script_save_backs_up_and_validates():
+    import main
+
+    s = main.pipeline.script("editable")
+    s.write_text("original script")
+    try:
+        r = client.post("/api/script/editable", content="edited words")
+        assert r.status_code == 200 and r.json()["saved"] == len("edited words")
+        assert s.read_text() == "edited words"
+        assert s.with_suffix(".bak").read_text() == "original script"
+        r = client.post("/api/script/editable", content="   ")
+        assert r.status_code == 400
+        assert s.read_text() == "edited words"  # untouched
+        # second save: .bak moves to the immediately-previous version
+        client.post("/api/script/editable", content="v3")
+        assert s.with_suffix(".bak").read_text() == "edited words"
+        assert client.post("/api/script/ghost-job", content="x").status_code == 404
+    finally:
+        s.unlink(missing_ok=True)
+        s.with_suffix(".bak").unlink(missing_ok=True)
+
+
+def test_script_save_409_while_job_active():
+    import main
+
+    s = main.pipeline.script("busyedit")
+    s.write_text("words")
+    main.pipeline.status_path("busyedit").write_text('{"stage":"narrating"}')
+    try:
+        assert client.post("/api/script/busyedit", content="new").status_code == 409
+        assert s.read_text() == "words"
+    finally:
+        s.unlink(missing_ok=True)
+        main.pipeline.status_path("busyedit").unlink(missing_ok=True)
+
+
+def test_preview_synthesizes_snippet(monkeypatch):
+    import main
+
+    written = []
+
+    def fake_synth(script, out_path, progress=None, voice=None):
+        written.append((len(script), voice))
+        Path(out_path).write_bytes(b"preview-mp3")
+
+    monkeypatch.setattr(main, "synthesize", fake_synth)
+    try:
+        r = client.post("/api/preview", json={"text": "read this bit", "voice": "bm_lewis"})
+        assert r.status_code == 200 and r.content == b"preview-mp3"
+        assert written == [(len("read this bit"), "bm_lewis")]
+        r = client.post("/api/preview", json={"text": "read this bit", "voice": "bm_lewis"})
+        assert len(written) == 1  # hash cache hit
+        assert client.post("/api/preview", json={"text": " "}).status_code == 400
+        assert client.post("/api/preview", json={"text": "x", "voice": "nah"}).status_code == 400
+        r = client.post("/api/preview", json={"text": "y" * 1600})
+        assert r.status_code == 413
+    finally:
+        import hashlib
+
+        key = hashlib.sha1("bm_lewis\nread this bit".encode()).hexdigest()[:16]
+        (Path(main.pipeline.output_dir) / "samples" / f"preview-{key}.mp3").unlink(missing_ok=True)
+
+
+def test_preview_get_shares_cache_and_immutable_headers(monkeypatch):
+    """GET /api/preview: the read-aloud engine's path — browser-cacheable (immutable)
+    and sharing the hash cache with POST."""
+    import main
+
+    written = []
+
+    def fake_synth(script, out_path, progress=None, voice=None):
+        written.append(script)
+        Path(out_path).write_bytes(b"get-preview")
+
+    monkeypatch.setattr(main, "synthesize", fake_synth)
+    try:
+        r = client.get("/api/preview", params={"text": "same words", "voice": "bm_lewis"})
+        assert r.status_code == 200 and r.content == b"get-preview"
+        assert "immutable" in r.headers.get("cache-control", "")
+        client.get("/api/preview", params={"text": "same words", "voice": "bm_lewis"})
+        assert len(written) == 1  # hash cache hit
+        assert client.post("/api/preview", json={"text": "same words", "voice": "bm_lewis"}).status_code == 200
+        assert len(written) == 1  # GET/POST share the cache
+        assert client.get("/api/preview", params={"text": " "}).status_code == 400
+    finally:
+        import hashlib
+
+        key = hashlib.sha1("bm_lewis\nsame words".encode()).hexdigest()[:16]
+        (Path(main.pipeline.output_dir) / "samples" / f"preview-{key}.mp3").unlink(missing_ok=True)
+
+
+def test_follow_marks_404_until_rendered():
+    assert client.get("/api/follow/nothing-here").status_code == 404
+    import main
+
+    f = main.pipeline.follow("marked")
+    f.write_text('{"marks":[],"duration":0}')
+    try:
+        r = client.get("/api/follow/marked")
+        assert r.status_code == 200 and r.json()["duration"] == 0
+    finally:
+        f.unlink(missing_ok=True)
+
+
+def test_tts_marks_align_with_script(monkeypatch, tmp_path):
+    """Follow-along marks: sentence offsets must slice the script, and cumulative
+    durations must add up to the returned audio length."""
+    import numpy as np
+
+    import tts
+
+    class FakeKokoro:
+        def create(self, text, voice=None, speed=None, lang=None):
+            return np.zeros(len(text) * 10, dtype=np.float32), 24000
+
+    monkeypatch.setattr(tts, "_load", lambda: FakeKokoro())
+    script = "First sentence here. Second one is a bit longer than the first! Third? Yes, a third."
+    out = tmp_path / "a.mp3"
+    marks_path = tmp_path / "a.follow.json"
+    duration = tts.synthesize(script, out, marks_path=marks_path)
+    data = json.loads(marks_path.read_text())
+    assert data["marks"], "no marks written"
+    assert data["marks"][0]["t"] == 0
+    for m in data["marks"]:
+        assert script[m["s"] : m["e"]].strip(), "mark slice lands outside its sentence"
+    assert abs(data["duration"] - duration) < 1.0
+    assert out.exists()
+
+
+def test_tts_piece_cache_skips_unchanged_pieces(monkeypatch, tmp_path):
+    """The edit→re-render loop: only the piece containing the edit re-renders;
+    unchanged pieces replay from the on-disk cache."""
+    import numpy as np
+
+    import tts
+
+    calls = []
+
+    class FakeKokoro:
+        def create(self, text, voice=None, speed=None, lang=None):
+            calls.append(text)
+            return np.zeros(max(1, len(text) * 10), dtype=np.float32), 24000
+
+    monkeypatch.setattr(tts, "_load", lambda: FakeKokoro())
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    sents = [f"Sentence number {i:02d} has enough words in it to sound natural." for i in range(25)]
+    tts.synthesize(" ".join(sents), tmp_path / "a.mp3")
+    assert len(calls) >= 2, "script should span multiple TTS pieces"
+    calls.clear()
+    sents[18] = "Sentence number 18 was reworded to flow much better."
+    tts.synthesize(" ".join(sents), tmp_path / "b.mp3")
+    assert len(calls) == 1 and "reworded" in calls[0], f"needlessly re-rendered: {calls}"
+
+
+def test_recover_orphans_finds_handdropped_raw_named_pdf():
+    """A crash mid-job on a raw-named PDF must re-queue, not claim the PDF is missing."""
+    import main
+
+    p = main.pipeline
+    raw = Path(p.input_dir) / "My Paper (draft).pdf"
+    raw.write_bytes(b"%PDF-1.4 fake")
+    sp = p.status_path("My Paper draft")
+    sp.write_text('{"stage":"narrating"}')
+    try:
+        p.recover_orphans()
+        data = json.loads(sp.read_text())
+        assert data["stage"] == "queued" and data.get("error") is None
+        assert any(pdf.name == "My Paper (draft).pdf" for pdf in list(p.q.queue))
+    finally:
+        raw.unlink(missing_ok=True)
+        sp.unlink(missing_ok=True)
+        while not p.q.empty():
+            p.q.get_nowait()
+
+
+def test_unarchive_refuses_to_stomp_live_job():
+    """Unarchiving onto a live same-stem job would silently replace its files."""
+    import main
+
+    p = main.pipeline
+    out, arc = Path(p.output_dir), p.archive_dir()
+    arc.mkdir(exist_ok=True)
+    (out / "stomp.mp3").write_bytes(b"new")
+    (arc / "stomp.mp3").write_bytes(b"old")
+    try:
+        r = client.post("/api/archive/stomp?undo=1")
+        assert r.status_code == 409
+        assert (out / "stomp.mp3").read_bytes() == b"new"  # untouched
+        assert (arc / "stomp.mp3").read_bytes() == b"old"  # still archived
+    finally:
+        (out / "stomp.mp3").unlink(missing_ok=True)
+        (arc / "stomp.mp3").unlink(missing_ok=True)
+
+
+def test_upload_url_fetches_and_queues(monkeypatch):
+    import main
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"%PDF-1.4 from the web"
+
+    seen = []
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: (seen.append(req.full_url), FakeResp())[1])
+    try:
+        r = client.post(
+            "/api/upload-url", json={"url": "https://example.com/papers/cool-paper.pdf", "voice": "bf_emma"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {"saved": "cool-paper.pdf", "queued": True}
+        data = json.loads(main.pipeline.status_path("cool-paper").read_text())
+        assert data["stage"] == "queued" and data["voice"] == "bf_emma"
+        assert (Path(main.pipeline.input_dir) / "cool-paper.pdf").read_bytes() == b"%PDF-1.4 from the web"
+    finally:
+        while not main.pipeline.q.empty():
+            main.pipeline.q.get_nowait()
+        (Path(main.pipeline.input_dir) / "cool-paper.pdf").unlink(missing_ok=True)
+        main.pipeline.status_path("cool-paper").unlink(missing_ok=True)
+
+
+def test_upload_url_rewrites_arxiv_abs_page(monkeypatch):
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"%PDF-1.4 arxiv"
+
+    seen = []
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: (seen.append(req.full_url), FakeResp())[1])
+    try:
+        r = client.post("/api/upload-url", json={"url": "https://arxiv.org/abs/2301.12345v2"})
+        assert r.status_code == 200, r.text
+        assert seen == ["https://arxiv.org/pdf/2301.12345v2"]
+        assert r.json()["saved"] == "2301.12345v2.pdf"
+    finally:
+        import main
+
+        while not main.pipeline.q.empty():
+            main.pipeline.q.get_nowait()
+        (Path(main.pipeline.input_dir) / "2301.12345v2.pdf").unlink(missing_ok=True)
+        main.pipeline.status_path("2301.12345v2").unlink(missing_ok=True)
+
+
+def test_upload_url_rejects_non_pdf_response(monkeypatch):
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b"<html>paywall</html>"
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: FakeResp())
+    r = client.post("/api/upload-url", json={"url": "https://example.com/landing"})
+    assert r.status_code == 400
+    assert "did not return a PDF" in r.json()["detail"]
+
+
+def test_voice_sample_synthesizes_once_then_serves_cache(monkeypatch):
+    import main
+
+    calls = []
+
+    def fake_synth(script, out_path, progress=None, voice=None):
+        calls.append(voice)
+        Path(out_path).write_bytes(b"fake-sample-mp3")
+
+    monkeypatch.setattr(main, "synthesize", fake_synth)
+    try:
+        r = client.get("/api/voice-sample/af_heart")
+        assert r.status_code == 200 and r.content == b"fake-sample-mp3"
+        r = client.get("/api/voice-sample/af_heart")
+        assert r.status_code == 200
+        assert calls == ["af_heart"]  # second request hit the cache
+        assert client.get("/api/voice-sample/not_a_voice").status_code == 400
+    finally:
+        (Path(main.pipeline.output_dir) / "samples" / "af_heart.mp3").unlink(missing_ok=True)
+
+
+def test_feed_filters_by_tag():
+    import main
+
+    out = Path(main.pipeline.output_dir)
+    (out / "tagged-a.mp3").write_bytes(b"m")
+    (out / "tagged-a.status.json").write_text('{"title":"A","tags":["llm"]}')
+    (out / "tagged-b.mp3").write_bytes(b"m")
+    (out / "tagged-b.status.json").write_text('{"title":"B","tags":["vision"]}')
+    try:
+        r = client.get("/feed.xml", params={"tag": "llm"})
+        assert "tagged-a" in r.text and "tagged-b" not in r.text
+        assert client.get("/feed.xml").text.count("<item>") >= 2  # no tag: everything
+    finally:
+        for n in ("tagged-a", "tagged-b"):
+            (out / f"{n}.mp3").unlink(missing_ok=True)
+            (out / f"{n}.status.json").unlink(missing_ok=True)
+
+
+def test_upload_enqueues_with_voice_and_mode_already_set():
+    """The worker reads mode the instant it picks the job up: voice/mode must be
+    in the status file at queue time, not annotated afterwards — else an empty
+    queue races the annotation and runs the wrong (expensive) mode."""
+    import main
+
+    p = main.pipeline
+    try:
+        r = client.post(
+            "/api/upload",
+            files={"files": ("atomic.pdf", b"%PDF-1.4 fake")},
+            data={"voice": "am_adam", "mode": "verbatim"},
+        )
+        assert r.status_code == 200
+        data = json.loads(p.status_path("atomic").read_text())
+        assert data["stage"] == "queued"
+        assert data["voice"] == "am_adam" and data["mode"] == "verbatim"
+        assert any(pdf.name == "atomic.pdf" for pdf in list(p.q.queue))
+    finally:
+        while not p.q.empty():
+            p.q.get_nowait()
+        (Path(p.input_dir) / "atomic.pdf").unlink(missing_ok=True)
+        p.status_path("atomic").unlink(missing_ok=True)

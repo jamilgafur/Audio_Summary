@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Reader — read &amp; listen</title>
+<script>document.documentElement.dataset.theme = localStorage.getItem('pr-theme') || 'dark';</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
+<link rel="stylesheet" href="/static/pico.min.css">
+<style>
+  body { max-width: 1400px; margin: 0 auto; }
+  .mini { width: auto !important; padding: .25rem .7rem; font-size: .75rem; margin: 0; }
+  select.mini { padding-right: 1.6rem; }
+  .dur { color: var(--pico-muted-color); font-size: .8rem; }
+
+  .vhead { display: flex; justify-content: space-between; align-items: baseline;
+    gap: 1rem; padding: 1rem 0 .4rem; }
+  .vhead strong { word-break: break-word; font-size: 1.1rem; }
+  .split { display: flex; gap: 1rem; margin-top: .5rem; }
+  #vleft { flex: 3 1 0; display: flex; min-width: 0; }
+  #vpdf { width: 100%; height: 86vh; background: #fff;
+    border: 1px solid var(--pico-muted-border-color); border-radius: 10px; }
+  #vedit { flex: 1; height: 86vh; margin: 0; padding: .8rem; font-size: .9rem;
+    line-height: 1.6; resize: none;
+    border: 1px solid var(--pico-muted-border-color); border-radius: 10px; }
+  .side { flex: 2 1 280px; min-width: 240px; }
+  .row { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; flex-wrap: wrap; }
+  .row select { width: auto; padding: .2rem 2rem .2rem .5rem; font-size: .8rem; margin: 0; }
+  audio { width: 100%; margin-top: .6rem; }
+  #vscript { max-height: 64vh; overflow-y: auto; margin-top: .6rem; padding: .6rem .8rem;
+    font-size: .95rem; line-height: 1.65; border: 1px solid var(--pico-muted-border-color);
+    border-radius: 10px; }
+  #vscript p { margin: 0 0 .8em; font-size: inherit; }
+  #vscript .sent { cursor: pointer; border-radius: 3px; }
+  #vscript .sent:hover { background: #38b6ff22; }
+  #vscript .sent.on { background: #38b6ff44; }
+  #veditbtn.on, #vfollow.on { border-color: #38b6ff; color: #38b6ff; }
+  #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%);
+    background: #2f4a5f; color: #fff; padding: .6rem 1.1rem; border-radius: 10px;
+    font-size: .9rem; opacity: 0; pointer-events: none; transition: opacity .25s;
+    z-index: 20; max-width: 90vw; white-space: pre-wrap; }
+  #toast.err { background: #7a2f2f; }
+  #toast.show { opacity: 1; }
+  @media (max-width: 700px) {
+    .split { flex-direction: column; }
+    #vpdf { height: 65vh; }
+    #vedit { height: 55vh; }
+  }
+</style>
+</head>
+<body>
+<div class="vhead">
+  <strong id="vtitle"></strong>
+  <button id="vclose" class="secondary mini">✕ close tab</button>
+</div>
+<div class="split">
+  <div id="vleft">
+    <iframe id="vpdf" title="source document"></iframe>
+    <textarea id="vedit" hidden spellcheck="false" aria-label="narration script editor"></textarea>
+  </div>
+  <div class="side">
+    <div class="row"><label>speed
+      <select id="vrate">
+        <option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option>
+      </select></label>
+      <label>voice
+      <select id="vvoice" title="voice for listen-back previews and save &amp; re-render">
+        <option value="af_heart">♀ heart</option>
+        <option value="af_bella">♀ bella</option>
+        <option value="af_nova">♀ nova</option>
+        <option value="af_sky">♀ sky</option>
+        <option value="am_adam">♂ adam</option>
+        <option value="am_michael">♂ michael</option>
+        <option value="am_onyx">♂ onyx</option>
+        <option value="bf_emma">♀ emma (brit)</option>
+        <option value="bf_lily">♀ lily (brit)</option>
+        <option value="bm_george">♂ george (brit)</option>
+        <option value="bm_lewis">♂ lewis (brit)</option>
+      </select></label>
+      <span style="flex:1"></span>
+      <button id="veditbtn" class="mini secondary" title="edit the spoken script (paper review)">✏️ edit script</button>
+      <button id="vfollow" class="mini secondary" title="highlight the script as it plays">📜 follow along</button>
+    </div>
+    <div class="row" id="veditbar" hidden>
+      <button id="vprev2" class="mini secondary" title="listen from ~2 sentences before the cursor (Ctrl+Enter), or to the selection">▶ listen back</button>
+      <span id="vecount" class="dur"></span>
+      <span style="flex:1"></span>
+      <button id="vediscard" class="mini secondary">✕ discard</button>
+      <button id="vesave" class="mini" title="save the script and re-render the audio">💾 save &amp; re-render</button>
+    </div>
+    <audio id="vaudio" controls></audio>
+    <div id="vscript" hidden></div>
+  </div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const vpdf = $('vpdf'), vedit = $('vedit'), veditBar = $('veditbar'), veditBtn = $('veditbtn');
+const vaudio = $('vaudio'), vrate = $('vrate'), vscript = $('vscript'), vfollowBtn = $('vfollow');
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const errMsg = async (r, fallback) => { try { return JSON.parse(await r.text()).detail || fallback; } catch { return fallback; } };
+const vvoice = $('vvoice');
+
+const pos = {
+  get: n => +localStorage.getItem('pr-pos:' + n) || 0,
+  set: (n, t) => localStorage.setItem('pr-pos:' + n, t),
+};
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+const name = new URLSearchParams(location.search).get('name') || '';
+if (!name) {
+  document.body.innerHTML = '<p style="padding:2rem">No paper specified — open me from the library.</p>';
+  throw new Error('no name');
+}
+let job = {};
+
+/* one shared preview/snippet player */
+let previewAudio = null;
+function stopPreview() {
+  if (!previewAudio) return;
+  previewAudio.pause();
+  if (previewAudio._btn) previewAudio._btn.textContent = previewAudio._label;
+  previewAudio = null;
+}
+function playSnippet(urlOrBlob, btn, busyLabel, idleLabel) {
+  if (previewAudio && previewAudio._btn === btn) return stopPreview();
+  stopPreview();
+  vaudio.pause();
+  const a = typeof urlOrBlob === 'string' ? new Audio(urlOrBlob) : new Audio(URL.createObjectURL(urlOrBlob));
+  previewAudio = a;
+  a._btn = btn;
+  a._label = idleLabel;
+  btn.textContent = busyLabel;
+  a.onended = a.onerror = () => { if (previewAudio === a) { previewAudio = null; btn.textContent = idleLabel; } };
+  a.play().catch(() => {
+    if (previewAudio === a) { previewAudio = null; btn.textContent = idleLabel; }
+    toast('Preview unavailable', true);
+  });
+}
+
+/* ---- load the job + wire the player ---- */
+async function init() {
+  try { job = (await (await fetch('/api/jobs')).json()).find(j => j.name === name) || {}; } catch {}
+  $('vtitle').textContent = job.title || name;
+  document.title = (job.title || name) + ' — Paper Reader';
+  const r = localStorage.getItem('pr-rate:' + name);
+  if (r && [...vrate.options].some(o => o.value === r)) {
+    vrate.value = r;
+    vaudio.defaultPlaybackRate = +r;
+    vaudio.playbackRate = +r;
+  }
+  vvoice.value = job.voice || localStorage.getItem('pr-voice') || 'af_heart';  // job's own voice wins
+  if (job.fmt && !['pdf', 'txt', 'tex'].includes(job.fmt)) {
+    vpdf.src = 'about:blank';  // .docx renders in no browser — the script is the view
+    startFollow(true);
+  } else {
+    vpdf.src = '/api/source/' + encodeURIComponent(name);
+  }
+  vaudio.src = '/api/audio/' + encodeURIComponent(name);
+  const t = pos.get(name);
+  if (t) vaudio.addEventListener('loadedmetadata', () => { vaudio.currentTime = t; }, {once: true});
+}
+vrate.onchange = () => {
+  vaudio.playbackRate = +vrate.value;
+  localStorage.setItem('pr-rate:' + name, vrate.value);
+};
+vaudio.addEventListener('ended', () => pos.set(name, 0));
+setInterval(() => { if (name) pos.set(name, vaudio.currentTime); }, 2000);
+
+$('vclose').onclick = () => {
+  if (editDirty() && !confirm('Discard unsaved script edits?')) return;
+  window.close();
+  location.href = '/';  // window.close() is blocked unless a script opened the tab
+};
+
+/* ---- follow-along ---- */
+const followState = {on: false, marks: [], spans: [], cur: -1, req: 0};
+
+function offsetAtTime(t, marks) {
+  let lo = 0, hi = marks.length - 1, idx = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (marks[mid].t <= t) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return marks.length ? marks[idx].s : 0;
+}
+
+function stopFollow() {
+  followState.on = false;
+  followState.req++;
+  followState.marks = followState.spans = [];
+  followState.cur = -1;
+  vscript.hidden = true;
+  vscript.innerHTML = '';
+  vfollowBtn.classList.remove('on');
+  vfollowBtn.textContent = '📜 follow along';
+}
+
+async function startFollow(quiet) {
+  const req = ++followState.req;
+  let scriptText, fm;
+  try {
+    [scriptText, fm] = await Promise.all([
+      fetch('/api/script/' + encodeURIComponent(name)).then(r => r.ok ? r.text() : Promise.reject()),
+      fetch('/api/follow/' + encodeURIComponent(name)).then(r => r.ok ? r.json() : Promise.reject()),
+    ]);
+  } catch {
+    if (req !== followState.req) return;
+    if (!quiet) toast('Follow-along needs a re-render of this paper (it generates timing marks)', true);
+    stopFollow();
+    return;
+  }
+  if (req !== followState.req) return;
+  buildFollowDom(scriptText, fm.marks || []);
+  followState.on = true;
+  vscript.hidden = false;
+  vfollowBtn.classList.add('on');
+  vfollowBtn.textContent = '📜 following';
+  tickFollow();
+}
+
+vfollowBtn.onclick = () => { followState.on ? stopFollow() : startFollow(); };
+
+function buildFollowDom(text, marks) {
+  let html = '', posN = 0, openP = false;
+  const spans = [];
+  const gap = (a, b) => text.slice(a, b);
+  marks.forEach((m, i) => {
+    const g = gap(posN, m.s);
+    const paras = g.split(/\n\s*\n/);
+    paras.forEach((p, k) => {
+      const t = esc(p).replace(/\n/g, ' ');
+      if (k > 0 || !openP) { if (openP) html += '</p>'; html += '<p>'; openP = true; }
+      if (t.trim()) html += t + ' ';
+    });
+    if (!openP) { html += '<p>'; openP = true; }
+    html += `<span class="sent" data-i="${i}">${esc(text.slice(m.s, m.e))}</span> `;
+    spans.push(m);
+    posN = m.e;
+  });
+  const tail = gap(posN, text.length);
+  if (tail.trim()) { if (!openP) html += '<p>'; html += esc(tail).replace(/\n/g, ' '); }
+  if (openP) html += '</p>';
+  vscript.innerHTML = html;
+  followState.marks = spans;
+  followState.spans = [...vscript.querySelectorAll('.sent')];
+  vscript.onclick = e => {
+    const s = e.target.closest('.sent');
+    if (s) vaudio.currentTime = followState.marks[+s.dataset.i].t + 0.01;
+  };
+}
+
+function tickFollow() {
+  if (!followState.on || !followState.marks.length) return;
+  const t = vaudio.currentTime;
+  let lo = 0, hi = followState.marks.length - 1, idx = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (followState.marks[mid].t <= t) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  if (idx !== followState.cur) {
+    if (followState.cur >= 0 && followState.spans[followState.cur])
+      followState.spans[followState.cur].classList.remove('on');
+    const s = followState.spans[idx];
+    if (s) {
+      s.classList.add('on');
+      if (!vaudio.paused) s.scrollIntoView({block: 'nearest'});
+    }
+    followState.cur = idx;
+  }
+}
+vaudio.addEventListener('timeupdate', tickFollow);
+
+/* ---- script editor ---- */
+const editState = {on: false, original: ''};
+const editDirty = () => editState.on && vedit.value !== editState.original;
+
+function setEditMode(on) {
+  editState.on = on;
+  vedit.hidden = !on;
+  veditBar.hidden = !on;
+  vpdf.hidden = on;
+  veditBtn.classList.toggle('on', on);
+  veditBtn.textContent = on ? '👁 reading' : '✏️ edit script';
+  if (on) stopFollow();  // highlights describe the rendered audio, not your draft
+}
+
+async function enterEdit() {
+  let text;
+  try { text = await (await fetch('/api/script/' + encodeURIComponent(name))).text(); }
+  catch { toast('No script for this paper', true); return; }
+  let marks = [];  // for "pick off where you were listening"
+  try { marks = (await (await fetch('/api/follow/' + encodeURIComponent(name))).json()).marks || []; } catch {}
+  setEditMode(true);
+  editState.original = text;
+  vedit.value = text;
+  const off = marks.length ? offsetAtTime(vaudio.currentTime, marks) : 0;
+  vedit.focus();
+  vedit.setSelectionRange(off, off);
+  const line = text.slice(0, off).split('\n').length;
+  vedit.scrollTop = Math.max(0, line - 8) * 22;
+  updateEditCount();
+}
+function updateEditCount() {
+  const n = vedit.value.length;
+  $('vecount').textContent = `${n} chars · ≈${Math.max(1, Math.round(n / 900))} min spoken`;
+}
+vedit.addEventListener('keydown', e => {  // Ctrl+Enter = listen from ~2 sentences back
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('vprev2').click(); }
+});
+
+vedit.addEventListener('input', updateEditCount);
+
+veditBtn.onclick = () => {
+  if (!editState.on) return enterEdit();
+  if (editDirty() && !confirm('Discard unsaved script edits?')) return;
+  setEditMode(false);
+};
+
+/* listen window: start ~2 sentences (or a paragraph) before the caret, head up to max chars */
+function listenWindow(text, caret, back = 2, max = 1200) {
+  const bounds = [0], re = /(?:[.!?][\"'”’)\]]*\s+|\n\s*\n)/g;
+  let m;
+  while ((m = re.exec(text)) && m.index + m[0].length <= caret) bounds.push(m.index + m[0].length);
+  const start = bounds[Math.max(0, bounds.length - 1 - back)];
+  return text.slice(start, start + max).trim();
+}
+
+$('vprev2').onclick = async () => {
+  const btn = $('vprev2');
+  const {selectionStart: s0, selectionEnd: s1} = vedit;
+  const text = s1 > s0 ? vedit.value.slice(s0, s1).trim() : listenWindow(vedit.value, s0);
+  if (!text) { toast('Nothing to preview — put the cursor in some text', true); return; }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/preview', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, voice: vvoice.value})});
+    if (r.status >= 400) { toast(await errMsg(r, 'Preview failed'), true); return; }
+    playSnippet(await r.blob(), btn, '⏹ playing', '▶ preview');
+  } catch { toast('Preview failed', true); }
+  btn.disabled = false;
+};
+
+/* save -> rerender -> poll until the new audio is in place, then reload it */
+$('vesave').onclick = async () => {
+  if (!vedit.value.trim()) { toast('Script is empty', true); return; }
+  const btn = $('vesave');
+  btn.disabled = true;
+  try {
+    let r = await fetch('/api/script/' + encodeURIComponent(name), {method: 'POST', body: vedit.value});
+    if (r.status >= 400) { toast(await errMsg(r, 'Save failed'), true); btn.disabled = false; return; }
+    r = await fetch(`/api/rerender/${encodeURIComponent(name)}?voice=${encodeURIComponent(vvoice.value)}`, {method: 'POST'});
+    if (r.status >= 400) { toast(await errMsg(r, 'Re-render failed'), true); btn.disabled = false; return; }
+    setEditMode(false);
+    toast('Saved — re-rendering with your edits…');
+    waitForRender();
+  } catch { toast('Save failed', true); btn.disabled = false; }
+};
+
+function waitForRender() {
+  const iv = setInterval(async () => {
+    let stage;
+    try {
+      const j = (await (await fetch('/api/jobs')).json()).find(x => x.name === name);
+      stage = j && j.stage;
+    } catch { return; }
+    if (stage === 'done') {
+      clearInterval(iv);
+      stopFollow();
+      vaudio.src = '/api/audio/' + encodeURIComponent(name) + '?v=' + Date.now();
+      vaudio.load();
+      toast('Re-rendered — press play');
+      $('vesave').disabled = false;
+    } else if (stage === 'failed' || !stage) {
+      clearInterval(iv);
+      toast('Re-render failed — see the main page for the error', true);
+      $('vesave').disabled = false;
+    }
+  }, 4000);
+}
+
+$('vediscard').onclick = () => {
+  if (editDirty() && !confirm('Discard unsaved script edits?')) return;
+  setEditMode(false);
+};
+
+init();
+</script>
+</body>
+</html>
