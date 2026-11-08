@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: 1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # The smoke test runs real Kokoro TTS — cache the ~340 MB model downloads.
+      - uses: actions/cache@v4
+        id: models
+        with:
+          path: models/
+          key: kokoro-v1.0-${{ runner.os }}
+      - run: pip install -r requirements-dev.txt
+      # llama-cpp-python is intentionally NOT in requirements.txt (the Dockerfile
+      # builds it per-target); the GPU-fallback test skips on a plain import failure.
+      - run: pytest tests/ -v
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements.txt -r requirements-dev.txt
+
+  js-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Syntax-check every page's <script> block
+        run: |
+          for f in app/static/*.html; do
+            awk '/<script>$/{x=1;next}/<\/script>/{x=0}x' "$f" > /tmp/check.js
+            [ -s /tmp/check.js ] && node --check /tmp/check.js
+          done
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Prove the CPU (non-GPU) path builds; the CUDA build is a local-only step
+      # (it recompiles llama.cpp ~10 min and needs the user's arch flag).
+      - run: docker build --build-arg BASE=python:3.12-slim --build-arg CMAKE_ARGS="" -t paper-reader:ci .

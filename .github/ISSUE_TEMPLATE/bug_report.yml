@@ -1,0 +1,42 @@
+name: Bug report
+description: Something broken, crashing, or misbehaving
+labels: [bug]
+body:
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode?
+      options: [summary (LLM explainer), verbatim (exact words), write tab (read-aloud editor), not sure]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      placeholder: What did you do, what did you expect, what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        1. Upload a .pdf in summary mode
+        2. Click re-render
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: `docker logs <container>` around the failure, and the job's `error` field from the UI if shown.
+      render: shell
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / driver
+      placeholder: e.g. GTX 1660 Ti, driver 550.90 — or "CPU only"
+  - type: input
+    id: version
+    attributes:
+      label: Commit / image
+      placeholder: git rev, or how you built the image (compose / CPU build arg)

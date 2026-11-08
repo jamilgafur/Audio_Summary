@@ -1,6 +1,30 @@
-.venv/
-models/
-input/*.pdf
-output/
+# Python
 __pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime data — user papers, renders, and model weights never get committed
+input/
+output/
+models/
+
+# Secrets & local overrides
+.env
+.env.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local AI-agent notes (conventions for coding agents) — deliberately not published
+AGENTS.md

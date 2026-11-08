@@ -1,0 +1,21 @@
+name: Feature request / idea
+description: Something you'd like to see, or a problem the app doesn't solve
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem or use case
+      placeholder: What are you trying to do today, and what's missing?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      placeholder: What would solving it look like?
+  - type: textarea
+    id: alt
+    attributes:
+      label: Alternatives you considered
+      placeholder: Including "just do it manually and it's fine" — useful either way.

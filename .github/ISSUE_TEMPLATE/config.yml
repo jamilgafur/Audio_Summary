@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-security-settings/understanding-security-advisories-for-your-repository#publishing-a-security-advisory
+    about: Do NOT open public issues for security problems — see SECURITY.md.

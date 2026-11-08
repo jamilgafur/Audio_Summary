@@ -1,0 +1,19 @@
+[project]
+name = "paper-reader"
+version = "0.1.0"
+description = "Local paper-to-podcast pipeline: research papers in, spoken MP3s out. LLM narration + Kokoro TTS, all on your machine."
+readme = "README.md"
+license = { text = "BUSL-1.1" }
+requires-python = ">=3.10"
+# Not a distributable package — this is configuration only (ruff + pytest).
+# Runtime deps live in requirements.txt so the Docker image stays the single source of truth.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
