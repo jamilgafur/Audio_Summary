@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       # The smoke test runs real Kokoro TTS — cache the ~340 MB model downloads.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: models
         with:
           path: models/
