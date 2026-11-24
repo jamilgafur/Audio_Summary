@@ -20,7 +20,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       # The CPU image is the portable artifact (works anywhere). GPU users build
       # locally with the CUDA base + their arch flag — see README "GPU image".
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
