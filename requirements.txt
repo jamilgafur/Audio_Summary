@@ -3,7 +3,7 @@ fastapi==0.162.0
 uvicorn==0.54.0
 python-multipart==0.0.32
 pymupdf==1.28.2
-kokoro-onnx==0.4.7
+kokoro-onnx==0.6.1
 lameenc==1.9.0
 huggingface_hub==2.4.0
 # llama-cpp-python is installed separately by the Dockerfile:
