@@ -1,5 +1,6 @@
 # BUSL-1.1 — see LICENSE (change date 2030-11-07 -> Apache-2.0)
-"""Turn extracted paper text into a spoken narration script via a local GGUF LLM.
+"""Turn extracted paper text into a spoken narration script via a local GGUF LLM,
+or — bring your own key — any OpenAI-compatible chat API (OpenAI, OpenRouter, ...).
 
 The LLM runs in a spawned child process: llama.cpp hard-aborts mid-job (ggml_abort
 on CUDA OOM kills the process — not a catchable exception), and that must not take
@@ -9,8 +10,11 @@ retries once on CPU. The child's exit also frees the VRAM deterministically.
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 MAX_CHUNK_WORDS = 1200  # ~1600 tokens; fits an 8k context with room for the reply
@@ -74,32 +78,90 @@ def _load_llm(force_cpu: bool):
         return llm, "cpu-fallback"
 
 
+def _intro(paper: dict) -> str:
+    title, authors = paper["title"], paper["authors"] or "unknown authors"
+    return f"You're listening to {title}, by {authors}.\n\n"
+
+
+def _messages(title: str, part: int, total: int, chunk: str) -> list[dict]:
+    return [
+        {"role": "system", "content": _SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f'This is part {part} of {total} of the paper "{title}". '
+                "Rewrite it as spoken narration in 2-4 paragraphs.\n\n" + chunk
+            ),
+        },
+    ]
+
+
 def _generate(paper: dict, emit, force_cpu: bool) -> str:
     """The whole narration. emit(kind, *args) reports backend/progress events."""
-    title, authors = paper["title"], paper["authors"] or "unknown authors"
-    intro = f"You're listening to {title}, by {authors}.\n\n"
-
     llm, backend = _load_llm(force_cpu)
     emit("backend", backend)
     chunks = [c for s in paper["sections"] for c in _chunk_words(s["text"])]
-    parts = [intro]
+    parts = [_intro(paper)]
     for i, chunk in enumerate(chunks):
         if not chunk.strip():
             continue
-        messages = [
-            {"role": "system", "content": _SYSTEM},
-            {
-                "role": "user",
-                "content": (
-                    f'This is part {i + 1} of {len(chunks)} of the paper "{title}". '
-                    "Rewrite it as spoken narration in 2-4 paragraphs.\n\n" + chunk
-                ),
-            },
-        ]
-        reply = llm.create_chat_completion(messages=messages, temperature=0.5, max_tokens=1400)
+        reply = llm.create_chat_completion(
+            messages=_messages(paper["title"], i + 1, len(chunks), chunk), temperature=0.5, max_tokens=1400
+        )
         parts.append(reply["choices"][0]["message"]["content"].strip())
         emit("progress", i + 1, len(chunks))
     return "\n\n".join(parts)
+
+
+# ---- BYOK: any OpenAI-compatible chat API (OpenAI, OpenRouter, Ollama, ...) ----
+
+_API_TIMEOUT = 300  # one 1200-word chunk on a slow hosted model can take minutes
+
+
+def _api_chat(cfg: dict, messages: list[dict], max_tokens: int) -> str:
+    """One chat-completions round-trip. cfg: base_url, model, api_key (the key is
+    optional — keyless local gateways like Ollama's OpenAI endpoint work too)."""
+    url = cfg["base_url"].rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url += "/chat/completions"  # accept the bare base URL or the full endpoint
+    headers = {"Content-Type": "application/json"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    body = json.dumps({"model": cfg["model"], "messages": messages, "max_tokens": max_tokens})
+    req = urllib.request.Request(url, data=body.encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=_API_TIMEOUT) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read(300).decode(errors="replace")
+        raise RuntimeError(f"narration API error: HTTP {e.code} {e.reason} — {detail}") from None
+    except Exception as e:  # DNS/TLS/timeout/malformed JSON — all surface the same way
+        raise RuntimeError(f"narration API error: {e}") from None
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError, AttributeError):
+        raise RuntimeError(f"narration API error: unexpected response: {str(data)[:200]}") from None
+
+
+def api_narrate(paper: dict, cfg: dict, progress=None) -> str:
+    """BYOK narration via a hosted model — no local GGUF, no child process."""
+    missing = [k for k in ("base_url", "model") if not cfg.get(k)]
+    if missing:
+        raise RuntimeError(f"narration API settings incomplete: missing {', '.join(missing)} — see the Settings tab")
+    chunks = [c for s in paper["sections"] for c in _chunk_words(s["text"])]
+    parts = [_intro(paper)]
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
+        parts.append(_api_chat(cfg, _messages(paper["title"], i + 1, len(chunks), chunk), max_tokens=1400))
+        if progress:
+            progress(i + 1, len(chunks))
+    return "\n\n".join(parts)
+
+
+def api_check(cfg: dict) -> str:
+    """Tiny round-trip behind the Settings "test connection" button. Returns the reply."""
+    return _api_chat(cfg, [{"role": "user", "content": "Reply with the single word: ready"}], max_tokens=8)
 
 
 def _child_main(conn, force_cpu: bool, paper: dict):
@@ -156,13 +218,20 @@ def _run_child(target, args: tuple, progress=None, on_backend=None) -> tuple[str
     raise ChildCrashedError(exitcode, backend)
 
 
-def narrate(paper: dict, progress=None, on_backend=None) -> str:
-    """paper: dict from extract.extract(). Returns the full narration script."""
+def narrate(paper: dict, progress=None, on_backend=None, llm: dict | None = None) -> str:
+    """paper: dict from extract.extract(). Returns the full narration script.
+    llm: BYOK config for an OpenAI-compatible endpoint (base_url/model/api_key);
+    None = the local GGUF in a spawned child process."""
     if os.getenv("NARRATE_MOCK"):  # test path: no model download, instant
         title, authors = paper["title"], paper["authors"] or "unknown authors"
         return (
             f"You're listening to {title}, by {authors}.\n\n" + "This is a mock narration used by the test suite. " * 30
         )
+
+    if llm is not None:  # remote API: network call, nothing that can hard-abort us
+        if on_backend:
+            on_backend("api")
+        return api_narrate(paper, llm, progress)
 
     try:
         return _run_child(_child_main, (False, paper), progress, on_backend)[0]

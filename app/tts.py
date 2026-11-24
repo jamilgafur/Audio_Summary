@@ -89,6 +89,12 @@ def _pieces(text: str, max_chars: int = 1200) -> list[str]:
     return pieces
 
 
+# kokoro-onnx crashes at >=510 phonemes: it truncates to MAX_PHONEME_LENGTH=510 and
+# then indexes voice[len(tokens)] into a 510-row array. Its own phoneme batcher can
+# overshoot (>540 observed), so cap total phonemes per create() ourselves, with margin.
+_MAX_PHONEMES = 480
+
+
 def _render(kokoro, piece: str, voice: str, speed: float):
     """One piece of audio, disk-cached by (voice, speed, text): a re-render after a
     small edit only synthesizes the pieces that changed — unchanged sentences replay
@@ -102,13 +108,29 @@ def _render(kokoro, piece: str, voice: str, speed: float):
     )
     if f.exists():
         return np.load(f)
-    samples, _sr = kokoro.create(piece, voice=voice, speed=speed, lang="en-us")
+    samples = _render_safe(kokoro, piece, voice, speed)
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".npy.tmp")  # crash mid-save must not leave a "valid" cache entry
     with open(tmp, "wb") as w:
         np.save(w, samples)
     os.replace(tmp, f)
     return samples
+
+
+def _render_safe(kokoro, text: str, voice: str, speed: float):
+    """Synthesize under the phoneme cap, splitting at a word boundary when over."""
+    if len(kokoro.tokenizer.phonemize(text, "en-us")) <= _MAX_PHONEMES:
+        samples, _sr = kokoro.create(text, voice=voice, speed=speed, lang="en-us")
+        return samples
+    mid = len(text) // 2
+    cut = text.rfind(" ", 0, mid)
+    if cut <= 0:
+        cut = text.find(" ", mid)
+    if 0 < cut < len(text) - 1:
+        left, right = text[:cut], text[cut + 1 :]  # word boundary: drop the space
+    else:
+        left, right = text[:mid], text[mid:]  # pathological space-free run: hard split
+    return np.concatenate([_render_safe(kokoro, left, voice, speed), _render_safe(kokoro, right, voice, speed)])
 
 
 def synthesize(

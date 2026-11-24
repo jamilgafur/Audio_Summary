@@ -26,6 +26,16 @@ _MOSTLY_SYMBOLS = re.compile(r"^[^a-zA-Z]*$")
 
 MIN_TEXT_CHARS = 500  # below this the PDF is almost certainly scanned images
 
+# a word split at a line wrap: lowercase word, or an all-caps word (WAL-\nRUS)
+_HYPHEN_WRAP = re.compile(r"(?<=[a-z])-\n(?=[a-z])|(?<=[A-Z]{2})-\n(?=[A-Z])")
+
+# shortcut: at most 2 columns are detected; a 3-column layout gets one gutter and a
+# mixed right column. Upgrade to GROBID together with the other layout heuristics.
+_GUTTER_MIN_PT = 6  # real column gaps measured at 8-22pt; in-column word gaps stay <6pt
+# blocks narrower than this are page numbers/footnote slivers that can sit inside a
+# gutter; they must not split it during detection (they bucket as full-width below)
+_SLIVER_PT = 12
+
 
 class ScannedPDFError(RuntimeError):
     """Raised when a PDF has no usable text layer (scanned images)."""
@@ -63,6 +73,14 @@ def _clean_lines(text: str) -> str:
     return "\n".join(kept)
 
 
+def _dehyphenate(text: str) -> str:
+    """Join words split across a line wrap ("em-\\nployment" -> "employment"): a half
+    word read aloud is the worst PDF artifact for narration.
+    shortcut: a compound hyphenated exactly at its wrap ("transformer-\\nbased") joins
+    and loses the hyphen — fine when spoken; upgrade to GROBID if it matters."""
+    return _HYPHEN_WRAP.sub("", text)
+
+
 def extract(path: str | Path) -> dict:
     """Return {title, authors, sections: [{title, text}]} from any supported source."""
     path = Path(path)
@@ -83,10 +101,55 @@ def extract(path: str | Path) -> dict:
     return paper
 
 
+def _gutter(w: float, blocks: list) -> tuple[float, float] | None:
+    """x-range of the gutter between two columns, or None for single-column pages.
+
+    sort=True on a 2-column page merges left/right column lines at the same height
+    into hybrid lines; a gutter means the page must be read column by column.
+    """
+    left, right = [], []
+    for b in blocks:
+        if b[0] < 0.45 * w and b[2] > 0.55 * w:
+            continue  # full-width block: title/authors, wide figure — not column text
+        if b[2] - b[0] < _SLIVER_PT:
+            continue  # page number / footnote marker sliver, often inside the gutter
+        (left if (b[0] + b[2]) / 2 < w / 2 else right).append(b)
+    if len(left) < 2 or len(right) < 2:
+        return None  # figure-heavy or sparse page: single-column reading is safe
+    # robust edges: a figure's axis labels can poke past the column edge without
+    # filling the gutter; max/min would let them veto an otherwise clean column split
+    lx1 = sorted(b[2] for b in left)
+    rx0 = sorted(b[0] for b in right)
+    g = (lx1[min(len(lx1) - 1, int(len(lx1) * 0.85))], rx0[min(len(rx0) - 1, int(len(rx0) * 0.15))])
+    return g if g[1] - g[0] >= _GUTTER_MIN_PT else None
+
+
+def _page_text(page) -> str:
+    """Page text in reading order: full-width blocks, then left column, then right."""
+    w = page.rect.width
+    blocks = [b for b in page.get_text("blocks") if b[6] == 0]  # text only; images carry none
+    g = _gutter(w, blocks)
+    if g is None:
+        return page.get_text(sort=True)
+    gx0, gx1 = g
+
+    def bucket(b) -> int:
+        if b[2] <= gx0:
+            return 1  # fully left of the gutter
+        if b[0] >= gx1:
+            return 2  # fully right of the gutter
+        return 0  # straddles the gutter: full-width title/figure text, page number
+
+    cols = ([], [], [])
+    for b in blocks:
+        cols[bucket(b)].append(b)
+    return "\n".join(b[4].strip("\n") for col in cols for b in sorted(col, key=lambda b: (b[1], b[0])))
+
+
 def _extract_pdf(path: Path) -> dict:
     doc = pymupdf.open(str(path))
     try:
-        pages = [page.get_text(sort=True) for page in doc]
+        pages = [_page_text(page) for page in doc]
         title = (doc.metadata or {}).get("title") or Path(path).stem.replace("_", " ")
         authors = (doc.metadata or {}).get("author", "").strip()
 
@@ -98,7 +161,7 @@ def _extract_pdf(path: Path) -> dict:
 
     whole = "\n".join(s["text"] for s in sections)
     if len(whole) < MIN_TEXT_CHARS:
-        raw = _clean_lines("\n".join(pages))
+        raw = _dehyphenate(_clean_lines("\n".join(pages)))
         if len(raw) >= MIN_TEXT_CHARS:  # heuristics failed; fall back to full text
             sections = [{"title": "full text", "text": raw}]
             whole = raw
@@ -122,7 +185,7 @@ def _sections_from_toc(doc, pages: list[str]) -> list[dict]:
 
 def _sections_from_headings(pages: list[str]) -> list[dict]:
     numbered = re.compile(
-        r"^\s*(\d+\.?\s+)?(abstract|introduction|background|related work|"
+        r"^\s*((?:\d+|[ivxlcdm]+)\.?\s+)?(abstract|introduction|background|related work|"
         r"method(?:s|ology)?|approach|experiments?|results?|evaluation|"
         r"discussion|conclusion[s]?|acknowledg?ements?)\s*$",
         re.IGNORECASE,
@@ -163,7 +226,7 @@ def _finish(sections: list[dict]) -> list[dict]:
             trimmed.append({"title": s["title"], "text": s["text"][: m.start()]})
             break  # everything after references is appendix noise
         trimmed.append(s)
-    cleaned = [{"title": s["title"], "text": _clean_lines(s["text"])} for s in trimmed]
+    cleaned = [{"title": s["title"], "text": _dehyphenate(_clean_lines(s["text"]))} for s in trimmed]
     return [s for s in cleaned if len(s["text"].strip()) > 50]
 
 
@@ -209,6 +272,16 @@ def _extract_docx(path: Path) -> dict:
 # following. A paper split across files only narrates the main file.
 _BRACED = r"\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}"  # one level of nesting
 
+_SPECIALS = {  # escaped specials → how they should sound
+    "%": " percent ",
+    "&": " and ",
+    "$": " dollar ",
+    "#": " hash ",
+    "_": " underscore ",
+    "{": " open brace ",
+    "}": " close brace ",
+}
+
 
 def _tex_arg(cmd: str, text: str) -> str:
     m = re.search(r"\\" + cmd + _BRACED, text)
@@ -217,6 +290,7 @@ def _tex_arg(cmd: str, text: str) -> str:
 
 def _tex_strip(t: str) -> str:
     t = re.sub(r"(?<!\\)%.*", "", t)  # comments
+    t = re.sub(r"\\([%$&#_{}])", lambda m: _SPECIALS[m.group(1)], t)  # \% reads as "percent"
     t = re.sub(r"\$\$.*?\$\$|\$[^$]*\$", " ", t, flags=re.S)  # math
     t = re.sub(
         r"\\begin\{(?:equation|align|figure|table|tabular)[^}]*\}.*?\\end\{(?:equation|align|figure|table|tabular)[^}]*\}",

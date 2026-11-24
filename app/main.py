@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from extract import SRC_EXT, ScannedPDFError, extract
-from narrate import narrate, verbatim
+from narrate import api_check, narrate, verbatim
 from tts import synthesize
 
 INPUT_DIR = Path(os.getenv("INPUT_DIR", "./input"))
@@ -51,7 +51,11 @@ _ACTIVE_STAGES = {"queued", "extracting", "narrating", "rendering audio"}
 
 
 def _safe(name: str) -> str:
-    stem = _SAFE_STEM.sub("", Path(name).stem).strip()
+    p = Path(name)
+    # strip the extension only when it's a source type: job keys like "2606.05670v2"
+    # (arXiv downloads) contain dots but no extension and must stay whole
+    base = p.name.removesuffix(p.suffix) if p.suffix.lower() in SRC_EXT else p.name
+    stem = _SAFE_STEM.sub("", base).strip()
     if not stem:
         raise HTTPException(400, "invalid filename")
     return stem
@@ -159,6 +163,55 @@ class Pipeline:
             n += 1
         return slug
 
+    # settings ---------------------------------------------------------
+    def settings_file(self) -> Path:
+        """Server-side defaults (voice/mode/BYOK), set from the Settings tab.
+        Not a job: jobs() and feed.xml only glob *.status.json / *.mp3."""
+        return self.output_dir / "settings.json"
+
+    def load_settings(self) -> dict:
+        """Effective settings: settings.json over env (VOICE, LLM_*).
+        shortcut: settings.json holds the API key in clear text — the whole app is
+        unauthenticated LAN-by-design; add auth before ever exposing it publicly."""
+        try:
+            s = json.loads(self.settings_file().read_text())
+        except (OSError, json.JSONDecodeError):
+            s = {}
+        llm = {"provider": "", "base_url": "", "model": "", "api_key": ""}
+        llm.update({k: v for k, v in (s.get("llm") or {}).items() if k in llm and isinstance(v, str)})
+        for k, env in (("base_url", "LLM_BASE_URL"), ("model", "LLM_MODEL"), ("api_key", "LLM_API_KEY")):
+            llm[k] = llm[k] or os.getenv(env, "")
+        if llm["provider"] not in ("local", "api"):
+            llm["provider"] = "api" if llm["base_url"] else "local"  # env-only config implies the API engine
+        return {"voice": s.get("voice") or os.getenv("VOICE", ""), "mode": s.get("mode") or "summary", "llm": llm}
+
+    def save_settings(self, patch: dict) -> dict:
+        """Merge a validated patch into settings.json (atomic), then return the
+        effective settings in API shape (the API key is never echoed back)."""
+        try:
+            data = json.loads(self.settings_file().read_text())
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if patch.get("voice") is not None:
+            data["voice"] = patch["voice"]
+        if patch.get("mode") is not None:
+            data["mode"] = patch["mode"]
+        llm = data.get("llm") or {}
+        for k in ("provider", "base_url", "model", "api_key"):
+            if patch.get("llm_" + k) is not None:
+                llm[k] = patch["llm_" + k]
+        if llm:
+            data["llm"] = llm
+        tmp = self.settings_file().with_suffix(".tmp")  # atomic, like every other write here
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, self.settings_file())
+        return _public_settings(self.load_settings())
+
+    def llm_config(self) -> dict | None:
+        """BYOK config when the API engine is active, else None (local GGUF)."""
+        llm = self.load_settings()["llm"]
+        return llm if llm["provider"] == "api" else None
+
     # crash recovery --------------------------------------------------
     def recover_orphans(self):
         """A worker crash (e.g. llama.cpp CUDA abort) leaves a status stuck in an
@@ -194,7 +247,8 @@ class Pipeline:
             title = self.status_data(stem).get("title") or paper_title
             authors = paper.get("authors") or ""
 
-            mode = self.status_data(stem).get("mode") or "summary"
+            settings = self.load_settings()
+            mode = self.status_data(stem).get("mode") or settings["mode"] or "summary"
             script_path = self.script(stem)
             if script_path.exists():
                 script = script_path.read_text()  # resume: LLM step already paid for
@@ -210,13 +264,13 @@ class Pipeline:
 
                 def on_backend(mode):
                     nonlocal backend_note
-                    backend_note = " · CPU fallback (VRAM busy)" if mode == "cpu-fallback" else ""
+                    backend_note = {"cpu-fallback": " · CPU fallback (VRAM busy)", "api": " · via API"}.get(mode, "")
 
                 def on_narrate(i, n):
                     pct = 10 + round(65 * i / n)
                     self.set_status(stem, "narrating", progress=pct, detail=f"part {i}/{n}{backend_note}", title=title)
 
-                script = narrate(paper, progress=on_narrate, on_backend=on_backend)
+                script = narrate(paper, progress=on_narrate, on_backend=on_backend, llm=self.llm_config())
                 script_path.write_text(script)
                 # the narration child process has exited by now; its VRAM is free for other services
 
@@ -224,7 +278,7 @@ class Pipeline:
                 pct = 75 + round(24 * i / n)
                 self.set_status(stem, "rendering audio", progress=pct, detail=f"piece {i}/{n}", title=title)
 
-            voice = self.status_data(stem).get("voice")  # set at upload or re-render time
+            voice = self.status_data(stem).get("voice") or settings["voice"] or None  # per-job > settings > env
             duration = synthesize(script, self.mp3(stem), progress=on_tts, voice=voice, marks_path=self.follow(stem))
 
             # Final artifacts are title-named and self-contained in output/:
@@ -449,6 +503,10 @@ def models_status():
         tmp = p.with_suffix(".tmp")  # tts.py's partial-download name
         return tmp.stat().st_size if tmp.exists() else 0
 
+    files = {_model_name(): ready(m / _model_name()), "voices-v1.0.bin": ready(m / "voices-v1.0.bin")}
+    if pipeline.llm_config() is not None:  # BYOK: narration goes to the API — no GGUF to wait for
+        return files
+
     gguf = m / os.getenv("GGUF_FILE", "Qwen2.5-7B-Instruct-Q4_K_M.gguf")
     if gguf.exists():
         gguf_size = gguf.stat().st_size
@@ -457,12 +515,91 @@ def models_status():
         hf_tmp = m / ".cache" / "huggingface" / "download"
         gguf_size = sum(f.stat().st_size for f in hf_tmp.glob("*.incomplete")) if hf_tmp.is_dir() else 0
 
+    return {**files, "gguf": gguf_size, "gguf_file": gguf.name}
+
+
+# ---- settings (Settings tab: voice/mode defaults + BYOK engine) ----------
+
+
+def _public_settings(s: dict) -> dict:
+    """API shape of the effective settings. The API key is write-only: only an
+    api_key_set flag goes back out — same on every response."""
+    llm = s["llm"]
     return {
-        _model_name(): ready(m / _model_name()),
-        "voices-v1.0.bin": ready(m / "voices-v1.0.bin"),
-        "gguf": gguf_size,
-        "gguf_file": gguf.name,
+        "voice": s["voice"],
+        "mode": s["mode"],
+        "llm": {
+            "provider": llm["provider"],
+            "base_url": llm["base_url"],
+            "model": llm["model"],
+            "api_key_set": bool(llm["api_key"]),
+        },
     }
+
+
+class Settings(BaseModel):
+    """A partial patch: null fields keep their current value. llm_api_key "" clears the key."""
+
+    voice: str | None = None
+    mode: str | None = None
+    llm_provider: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_api_key: str | None = None
+
+
+_MAX_SETTING = {"llm_base_url": 500, "llm_model": 200, "llm_api_key": 2000}
+
+
+def _validated(s: Settings) -> dict:
+    """Validate a settings patch at the trust boundary (the UI is unauthenticated)."""
+    patch = {}
+    if s.voice is not None:
+        patch["voice"] = _voice_or_400(s.voice) if s.voice else ""  # "" = unset, falls back to VOICE env
+    if s.mode is not None:
+        patch["mode"] = _mode_or_400(s.mode) if s.mode else ""
+    if s.llm_provider is not None:
+        if s.llm_provider not in ("local", "api"):
+            raise HTTPException(400, f"unknown llm_provider: {s.llm_provider!r}")
+        patch["llm_provider"] = s.llm_provider
+    for k in ("llm_base_url", "llm_model", "llm_api_key"):
+        v = getattr(s, k)
+        if v is None:
+            continue
+        v = v.strip()
+        if len(v) > _MAX_SETTING[k]:
+            raise HTTPException(400, f"{k} is too long")
+        patch[k] = v
+    if patch.get("llm_base_url") and not re.match(r"^https?://", patch["llm_base_url"]):
+        raise HTTPException(400, "llm_base_url must be an http(s) URL")
+    return patch
+
+
+@app.get("/api/settings")
+def get_settings():
+    return _public_settings(pipeline.load_settings())
+
+
+@app.post("/api/settings")
+def set_settings(s: Settings):
+    return pipeline.save_settings(_validated(s))
+
+
+@app.post("/api/settings/test")
+def test_settings(s: Settings):
+    """Round-trip the form's API settings against the endpoint before committing them."""
+    patch = _validated(s)
+    cfg = pipeline.load_settings()["llm"]
+    for k in ("base_url", "model", "api_key"):
+        if "llm_" + k in patch:
+            cfg[k] = patch["llm_" + k]
+    if patch.get("llm_provider", cfg["provider"]) != "api":
+        raise HTTPException(400, "connection test applies to the API engine")
+    try:
+        reply = api_check(cfg)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    return {"ok": True, "reply": reply[:80]}
 
 
 @app.get("/api/voice-sample/{voice}")

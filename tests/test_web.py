@@ -380,6 +380,28 @@ def test_retry_requeues_failed_job():
     assert not sp.exists()
 
 
+def test_retry_requeues_failed_job_with_dotted_stem():
+    """arXiv-style names ('2606.05670v2') contain dots but no extension — the stem
+    must stay whole or every endpoint (retry/delete/audio/...) misses the job."""
+    import main
+
+    p = main.pipeline
+    sp = p.status_path("2606.05670v2")
+    src = p.input_dir / "2606.05670v2.pdf"
+    sp.write_text('{"stage":"failed","error":"boom"}')
+    src.write_bytes(b"%PDF-1.7 fake")
+    try:
+        r = client.post("/api/retry/2606.05670v2")
+        assert r.json()["requeued"] is True
+        assert json.loads(sp.read_text())["stage"] == "queued"
+        assert main._safe("2606.05670v2") == "2606.05670v2"
+        assert main._safe("2606.05670v2.pdf") == "2606.05670v2"  # upload path still strips
+    finally:
+        sp.unlink(missing_ok=True)
+        src.unlink(missing_ok=True)
+        p.q.get_nowait() if not p.q.empty() else None  # don't leak the re-queued pdf
+
+
 def test_meta_sets_tags_and_title():
     import main
 
@@ -749,6 +771,12 @@ def test_tts_marks_align_with_script(monkeypatch, tmp_path):
     import tts
 
     class FakeKokoro:
+        class _Tok:
+            def phonemize(self, text, lang):
+                return ""  # always under the phoneme cap: this test is about marks, not capping
+
+        tokenizer = _Tok()
+
         def create(self, text, voice=None, speed=None, lang=None):
             return np.zeros(len(text) * 10, dtype=np.float32), 24000
 
@@ -776,6 +804,12 @@ def test_tts_piece_cache_skips_unchanged_pieces(monkeypatch, tmp_path):
     calls = []
 
     class FakeKokoro:
+        class _Tok:
+            def phonemize(self, text, lang):
+                return ""  # always under the phoneme cap: this test is about caching, not capping
+
+        tokenizer = _Tok()
+
         def create(self, text, voice=None, speed=None, lang=None):
             calls.append(text)
             return np.zeros(max(1, len(text) * 10), dtype=np.float32), 24000
@@ -789,6 +823,35 @@ def test_tts_piece_cache_skips_unchanged_pieces(monkeypatch, tmp_path):
     sents[18] = "Sentence number 18 was reworded to flow much better."
     tts.synthesize(" ".join(sents), tmp_path / "b.mp3")
     assert len(calls) == 1 and "reworded" in calls[0], f"needlessly re-rendered: {calls}"
+
+
+def test_tts_splits_overlong_phoneme_pieces(monkeypatch, tmp_path):
+    """kokoro-onnx crashes at >=510 phonemes per create() call; over-cap pieces must
+    be split at word boundaries so every create() stays under the cap."""
+    import numpy as np
+
+    import tts
+
+    calls = []
+
+    class FakeKokoro:
+        class _Tok:
+            def phonemize(self, text, lang):
+                return text  # 1 fake phoneme per char: char count == phoneme count
+
+        tokenizer = _Tok()
+
+        def create(self, text, voice=None, speed=None, lang=None):
+            assert len(text) <= tts._MAX_PHONEMES, f"create() got {len(text)} phonemes"
+            calls.append(text)
+            return np.zeros(max(1, len(text) * 10), dtype=np.float32), 24000
+
+    monkeypatch.setattr(tts, "_load", lambda: FakeKokoro())
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    script = "long academic word soup " * 60  # one breath, ~1440 phoneme-chars, no sentence break
+    duration = tts.synthesize(script, tmp_path / "long.mp3")
+    assert len(calls) > 1, "over-cap piece was not split"
+    assert duration > 0
 
 
 def test_recover_orphans_finds_handdropped_raw_named_pdf():
@@ -968,3 +1031,174 @@ def test_upload_enqueues_with_voice_and_mode_already_set():
             p.q.get_nowait()
         (Path(p.input_dir) / "atomic.pdf").unlink(missing_ok=True)
         p.status_path("atomic").unlink(missing_ok=True)
+
+
+# ---- BYOK: OpenAI-compatible narration API + Settings endpoints ---------
+
+
+def test_api_narrate_calls_openai_compatible_endpoint(monkeypatch):
+    """BYOK: narration must hit {base_url}/chat/completions with the key as a bearer
+    token, and assemble the chunk replies into one script."""
+    import urllib.request
+
+    import narrate
+
+    reqs = []
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "Spoken chunk."}}]}).encode()
+
+    def fake_urlopen(req, timeout=None):
+        reqs.append(req)
+        return FakeResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    paper = {"title": "T", "authors": "A", "sections": [{"title": "s", "text": "word " * 30}]}
+    seen = []
+    script = narrate.api_narrate(
+        paper,
+        {"base_url": "https://llm.example.com/v1/", "api_key": "sk-test", "model": "m1"},
+        progress=lambda i, n: seen.append((i, n)),
+    )
+    assert script.startswith("You're listening to T, by A.")
+    assert "Spoken chunk." in script
+    assert reqs[0].full_url == "https://llm.example.com/v1/chat/completions"
+    assert reqs[0].get_header("Authorization") == "Bearer sk-test"
+    body = json.loads(reqs[0].data)
+    assert body["model"] == "m1" and body["messages"][0]["role"] == "system"
+    assert seen == [(1, 1)]
+
+
+def test_api_narrate_surfaces_http_errors_readably(monkeypatch):
+    """A rejected key must fail the job with the provider's message, not a traceback."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    import narrate
+    import pytest
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", None, io.BytesIO(b'{"error": "bad key"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="narration API error: HTTP 401"):
+        narrate.api_check({"base_url": "https://llm.example.com/v1", "api_key": "sk-x", "model": "m"})
+
+
+def test_api_narrate_requires_base_url_and_model():
+    import narrate
+    import pytest
+
+    with pytest.raises(RuntimeError, match="missing model"):
+        narrate.api_narrate(
+            {"title": "T", "authors": "", "sections": [{"title": "s", "text": "x"}]},
+            {"base_url": "https://llm.example.com/v1", "model": ""},
+        )
+
+
+def test_narrate_routes_to_the_api_engine_when_configured(monkeypatch):
+    import narrate
+
+    monkeypatch.delenv("NARRATE_MOCK", raising=False)  # reach the real narrate() path
+    calls, backends = [], []
+    monkeypatch.setattr(narrate, "api_narrate", lambda paper, cfg, progress=None: calls.append(cfg) or "api script")
+    script = narrate.narrate(
+        {"title": "T", "authors": "", "sections": []},
+        on_backend=backends.append,
+        llm={"base_url": "https://llm.example.com/v1", "model": "m"},
+    )
+    assert script == "api script" and calls and backends == ["api"]
+
+
+def test_settings_roundtrip_and_api_key_is_write_only():
+    import main
+
+    s = main.pipeline.settings_file()
+    try:
+        r = client.get("/api/settings")
+        assert r.status_code == 200
+        assert r.json()["llm"] == {"provider": "local", "base_url": "", "model": "", "api_key_set": False}
+
+        r = client.post(
+            "/api/settings",
+            json={
+                "voice": "bf_emma",
+                "mode": "verbatim",
+                "llm_provider": "api",
+                "llm_base_url": "https://llm.example.com/v1",
+                "llm_model": "gpt-test",
+                "llm_api_key": "sk-secret",
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["voice"] == "bf_emma" and body["mode"] == "verbatim"
+        assert body["llm"] == {
+            "provider": "api",
+            "base_url": "https://llm.example.com/v1",
+            "model": "gpt-test",
+            "api_key_set": True,
+        }
+        assert "sk-secret" not in r.text  # never echoed back
+        assert "sk-secret" in s.read_text()  # ...but stored for the worker
+        assert client.get("/api/settings").json()["llm"]["api_key_set"] is True
+
+        # null keeps the stored key; "" clears it
+        assert client.post("/api/settings", json={"llm_model": "gpt-2"}).json()["llm"]["api_key_set"] is True
+        assert client.post("/api/settings", json={"llm_api_key": ""}).json()["llm"]["api_key_set"] is False
+    finally:
+        s.unlink(missing_ok=True)
+
+
+def test_settings_validation_rejects_bad_values():
+    import main
+
+    s = main.pipeline.settings_file()
+    try:
+        assert client.post("/api/settings", json={"voice": "nope"}).status_code == 400
+        assert client.post("/api/settings", json={"mode": "singing"}).status_code == 400
+        assert client.post("/api/settings", json={"llm_provider": "carrier-pigeon"}).status_code == 400
+        assert client.post("/api/settings", json={"llm_base_url": "file:///etc/passwd"}).status_code == 400
+    finally:
+        s.unlink(missing_ok=True)
+
+
+def test_settings_test_button_roundtrips_the_form_values(monkeypatch):
+    import main
+
+    s = main.pipeline.settings_file()
+    try:
+        seen = []
+        monkeypatch.setattr(main, "api_check", lambda cfg: seen.append(cfg) or "ready")
+        r = client.post(
+            "/api/settings/test",
+            json={
+                "llm_provider": "api",
+                "llm_base_url": "https://llm.example.com/v1",
+                "llm_model": "gpt-test",
+                "llm_api_key": "sk-draft",
+            },
+        )
+        assert r.status_code == 200 and r.json() == {"ok": True, "reply": "ready"}
+        assert seen[0]["api_key"] == "sk-draft"  # the unsaved form values, not stale saved ones
+
+        assert client.post("/api/settings/test", json={"llm_provider": "local"}).status_code == 400
+
+        def boom(cfg):
+            raise RuntimeError("narration API error: HTTP 401 Unauthorized")
+
+        monkeypatch.setattr(main, "api_check", boom)
+        r = client.post(
+            "/api/settings/test", json={"llm_provider": "api", "llm_base_url": "https://x", "llm_model": "m"}
+        )
+        assert r.status_code == 502 and "401" in r.json()["detail"]
+    finally:
+        s.unlink(missing_ok=True)

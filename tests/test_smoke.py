@@ -106,3 +106,19 @@ def test_user_rename_survives_reprocess(mp3):
     st = json.loads(pipe.status_path("tinypaper").read_text())
     assert st["title"] == "My Custom Title"
     assert pipe.mp3("tinypaper").exists()  # rename is display-only; slug untouched
+
+
+def test_settings_defaults_apply_when_the_job_has_none(tmp_path_factory):
+    """Watcher-enqueued jobs carry no voice/mode — the Settings-tab defaults apply."""
+    tmp = tmp_path_factory.mktemp("defaults")
+    pdf = tmp / "defaults.pdf"
+    _make_pdf(pdf)
+
+    pipe = Pipeline(tmp / "in", tmp / "out")
+    pipe.settings_file().write_text(json.dumps({"voice": "bf_emma", "mode": "verbatim"}))
+    pdf.rename(pipe.input_dir / pdf.name)
+    pipe.process(pipe.input_dir / "defaults.pdf")
+
+    assert "Read verbatim" in pipe.script("defaults").read_text()  # settings mode won over "summary"
+    assert pipe.mp3("defaults").exists()
+    assert json.loads(pipe.status_path("defaults").read_text())["stage"] == "done"

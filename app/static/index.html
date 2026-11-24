@@ -213,7 +213,7 @@
   <nav class="tabs">
     <button data-tab="library" class="on">📚 Library</button>
     <button data-tab="write">✍️ Write</button>
-    <button data-tab="voices">🎙 Voices</button>
+    <button data-tab="voices">⚙️ Settings</button>
     <button data-tab="feeds">📡 Feeds</button>
   </nav>
 
@@ -243,7 +243,7 @@
       <button id="wstop" class="mini secondary" title="stop reading">■</button>
       <span id="wpos" class="dur"></span>
       <label class="dur">speed <select id="wspeed" class="mini"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option></select></label>
-      <label class="dur">voice <select id="wvoice" class="mini" title="voice for this tab — same as the Voices-tab default"></select></label>
+      <label class="dur">voice <select id="wvoice" class="mini" title="voice for this tab — same as the Settings-tab default"></select></label>
       <span id="wcount" class="dur"></span>
       <span style="flex:1"></span>
       <button id="wprev2" class="mini secondary" title="listen from ~2 sentences before the cursor (Ctrl+Enter), or to the selection">▶ listen back</button>
@@ -260,7 +260,8 @@
   </section>
 
   <section id="tab-voices" hidden>
-    <div class="row" style="margin-top:1.25rem">
+    <h6 style="margin-top:1.25rem">Voice &amp; narration</h6>
+    <div class="row">
       <label>voice
         <select id="voice">
           <option value="af_heart">♀ heart (default)</option>
@@ -287,8 +288,33 @@
       </label>
       <span class="dur">verbatim skips the LLM — for reviewing your own drafts</span>
     </div>
-    <p class="dur">These are the defaults for new uploads, URL fetches, and re-renders.
-    Playback position counts as “listened”; the 🎧 Library group shows what’s left.</p>
+
+    <h6>Narration engine</h6>
+    <div class="row">
+      <label>engine
+        <select id="llm-provider">
+          <option value="local">🧠 local LLM (GGUF — private, slower)</option>
+          <option value="api">🔑 OpenAI-compatible API (bring your own key)</option>
+        </select>
+      </label>
+    </div>
+    <div id="llm-api" hidden>
+      <div class="row"><label>base URL <input id="llm-base" type="url" placeholder="https://api.openai.com/v1" autocomplete="off"></label></div>
+      <div class="row"><label>model <input id="llm-model" placeholder="gpt-4o-mini" autocomplete="off"></label></div>
+      <div class="row"><label>API key <input id="llm-key" type="password" placeholder="sk-…" autocomplete="off"></label>
+        <button id="keyclear" class="mini secondary" title="remove the stored key">✕ clear key</button></div>
+      <div class="row">
+        <button id="settest" class="mini secondary" title="one tiny request to check URL / model / key">test connection</button>
+        <button id="setsave" class="mini">save</button>
+        <span id="setstatus" class="dur"></span>
+      </div>
+    </div>
+    <p class="dur">Voice, mode, and engine are stored on the server — every device that opens this page gets the same
+    defaults (used for uploads, URL fetches, and <code>input/</code> drops). The API key is kept in
+    <code>output/settings.json</code>, never sent back to the browser. With the API engine, papers are narrated by your
+    hosted model (OpenAI, OpenRouter, Ollama, LM Studio — anything that speaks the chat-completions API); audio
+    rendering stays local either way. Env vars <code>LLM_BASE_URL</code> / <code>LLM_MODEL</code> / <code>LLM_API_KEY</code>
+    set the same defaults from Docker. Playback position counts as “listened”; the 🎧 Library group shows what’s left.</p>
   </section>
 
   <section id="tab-feeds" hidden>
@@ -305,7 +331,7 @@
   <button id="bulkclear" class="mini secondary">clear</button>
 </div>
 
-<footer>Runs fully on your machine — nothing leaves it.</footer>
+<footer>Runs fully on your machine — no cloud, no telemetry. Optional: bring your own LLM API key.</footer>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -326,7 +352,7 @@ const errMsg = async (r, fallback) => { try { return JSON.parse(await r.text()).
 voiceSel.value = localStorage.getItem('pr-voice') || 'af_heart';
 modeSel.value = localStorage.getItem('pr-mode') || 'summary';
 let sortMode = localStorage.getItem('pr-sort') || 'recent';
-modeSel.onchange = () => { localStorage.setItem('pr-mode', modeSel.value); updateDefaults(); };
+modeSel.onchange = () => { localStorage.setItem('pr-mode', modeSel.value); updateDefaults(); postSettings({mode: modeSel.value}); };
 searchBox.oninput = () => render();
 
 /* ui state (survives polling re-renders) */
@@ -410,7 +436,12 @@ function playSnippet(urlOrBlob, btn, busyLabel, idleLabel) {
 }
 $('vprev').onclick = () =>
   playSnippet('/api/voice-sample/' + encodeURIComponent(voiceSel.value), $('vprev'), '⏹', '🔊');
-voiceSel.onchange = () => { localStorage.setItem('pr-voice', voiceSel.value); stopPreview(); updateDefaults(); $('wvoice').value = voiceSel.value; };
+voiceSel.onchange = () => {
+  localStorage.setItem('pr-voice', voiceSel.value);
+  stopPreview(); updateDefaults();
+  $('wvoice').value = voiceSel.value;
+  postSettings({voice: voiceSel.value});
+};
 const wvoice = $('wvoice');
 wvoice.innerHTML = voiceSel.innerHTML;
 wvoice.value = voiceSel.value;
@@ -419,6 +450,73 @@ wvoice.onchange = () => {
   voiceSel.onchange();  // one default, two doors
   for (const u of RD.cache.values()) URL.revokeObjectURL(u);  // blobs are voice-specific
   RD.cache.clear();
+};
+
+/* ---- Settings tab: server-synced defaults + BYOK narration engine ----
+   voice/mode persist on change; the engine form saves via its button (the key
+   field is blank = keep, so the key is never round-tripped through the browser). */
+const llmProv = $('llm-provider');
+function showApiFields() { $('llm-api').hidden = llmProv.value !== 'api'; }
+function setSaveStatus(msg, isErr) {
+  const el = $('setstatus');
+  el.textContent = msg;
+  el.style.color = isErr ? '#e08080' : '';
+}
+function settingsForm() {
+  const body = {
+    voice: voiceSel.value, mode: modeSel.value, llm_provider: llmProv.value,
+    llm_base_url: $('llm-base').value.trim(), llm_model: $('llm-model').value.trim(),
+  };
+  const key = $('llm-key').value.trim();
+  if (key) body.llm_api_key = key;
+  return body;
+}
+function applySettings(d) {
+  if (d.voice) voiceSel.value = d.voice;
+  if (d.mode) modeSel.value = d.mode;
+  $('wvoice').value = voiceSel.value;
+  const l = d.llm || {};
+  llmProv.value = l.provider || 'local';
+  $('llm-base').value = l.base_url || '';
+  $('llm-model').value = l.model || '';
+  $('llm-key').value = '';
+  $('llm-key').placeholder = l.api_key_set ? 'stored key — leave blank to keep' : 'sk-…';
+  showApiFields();
+  updateDefaults();
+}
+async function postSettings(body, okMsg) {
+  try {
+    const r = await fetch('/api/settings', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (r.status >= 400) { setSaveStatus(await errMsg(r, 'Save failed'), true); return null; }
+    applySettings(d);
+    setSaveStatus(okMsg || 'saved ✓', false);
+    return d;
+  } catch { setSaveStatus('Save failed', true); return null; }
+}
+async function loadSettings() {
+  try { applySettings(await (await fetch('/api/settings')).json()); }
+  catch {}  // server unreachable — localStorage values already applied
+}
+llmProv.onchange = () => { showApiFields(); postSettings({llm_provider: llmProv.value}); };
+$('setsave').onclick = async () => {
+  const d = await postSettings(settingsForm());
+  if (d) $('llm-key').value = '';  // now stored — blank means "keep" again
+};
+$('keyclear').onclick = () => postSettings({llm_api_key: ''}, 'key removed');
+$('settest').onclick = async () => {
+  const btn = $('settest');
+  btn.disabled = true;
+  setSaveStatus('testing…', false);
+  try {
+    const r = await fetch('/api/settings/test', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(settingsForm())});
+    const d = await r.json();
+    setSaveStatus(r.status >= 400 ? await errMsg(r, 'Test failed')
+      : `✓ connected — ${d.reply ? `model replied “${d.reply}”` : 'ok'}`, r.status >= 400);
+  } catch { setSaveStatus('Test failed', true); }
+  btn.disabled = false;
 };
 
 /* ---- Write tab: scratchpad + instant listen + send to library ---- */
@@ -442,6 +540,32 @@ addEventListener('pagehide', () => {  // don't lose the last half-second of typi
 });
 updateWCount();
 
+/* LaTeX drafts read as speech: \% is “percent”, a bare % comments out the rest of
+   the line, \cite/\ref-style commands vanish, \textbf{...} unwraps to its text.
+   shortcut: braced args don't nest (\footnote{a {b} c} keeps "a {b} c"), upgrade when
+   real drafts trip on it */
+function latexToSpeech(text) {
+  return text
+    .replace(/(^|[^\\])%.*$/gm, '$1')  // comments; the escaped \% survives to the next step
+    .replace(/\\([%$&#_{}])/g, (m, c) => ({'%': ' percent ', '&': ' and ', '$': ' dollar ',
+      '#': ' hash ', '_': ' underscore ', '{': ' open brace ', '}': ' close brace '}[c]))
+    .replace(/\\begin\{(?:equation|align|gather|multline|eqnarray|figure|table|tabular|thebibliography)\*?\}[\s\S]*?\\end\{[^{}]*\}/g, ' ')  // math & float bodies
+    .replace(/\$\$[\s\S]*?\$\$|\$[^$]*\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g, ' ')  // math
+    .replace(/\\(?:cite[a-z*]*|nocite|ref|eqref|pageref|label|footnote(?:mark|text)?|url|href|bibliographystyle|bibliography|bibitem|input|include|usepackage|documentclass|(?:new|renew|provide)command)(?:\[[^\]]*\]){0,2}\s*(?:\{[^{}]*\}\s*){0,2}/g, ' ')  // citations/refs/includes
+    .replace(/\\(?:(?:sub)*section|chapter|part|paragraph|subparagraph)\*?\s*\{([^{}]*)\}/g, '$1. ')  // headings stay as text
+    .replace(/\\(?:text\w*|emph|underline|mbox|fbox|framebox|title|author)\s*\{([^{}]*)\}/g, '$1')
+    .replace(/\\item\s*(?:\[[^\]]*\])?/g, '\n')
+    .replace(/\\(?:begin|end)\s*\{[^{}]*\}/g, ' ')  // remaining env markers
+    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?/g, ' ')  // \noindent, \hline, ...
+    .replace(/\\./g, ' ')  // \\ linebreak, \, \; ...
+    .replace(/[{}$&~]/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ +([.,;:!?])/g, '$1')  // dropped commands must not leave "and ."
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /* listen window: start ~2 sentences (or a paragraph) before the caret, head up to max chars */
 function listenWindow(text, caret, back = 2, max = 1200) {
   const bounds = [0], re = /(?:[.!?][\"'”’)\]]*\s+|\n\s*\n)/g;
@@ -458,7 +582,7 @@ wtext.addEventListener('keydown', e => {  // Ctrl+Enter = listen from ~2 sentenc
 $('wprev2').onclick = async () => {
   const btn = $('wprev2');
   const {selectionStart: s0, selectionEnd: s1} = wtext;
-  const text = s1 > s0 ? wtext.value.slice(s0, s1).trim() : listenWindow(wtext.value, s0);
+  const text = latexToSpeech(s1 > s0 ? wtext.value.slice(s0, s1) : listenWindow(wtext.value, s0));
   if (!text) { toast('Nothing to listen to — write or select some text', true); return; }
   btn.disabled = true;
   try {
@@ -472,8 +596,8 @@ $('wprev2').onclick = async () => {
 };
 
 $('wsend').onclick = () => {
-  const text = wtext.value.trim();
-  if (!text) { toast('Nothing to send — the draft is empty', true); return; }
+  const text = latexToSpeech(wtext.value);  // the library reads this — send the speakable form
+  if (!text.trim()) { toast('Nothing to send — the draft is empty (or all comments)', true); return; }
   const first = (text.split('\n').find(l => l.trim()) || 'draft').trim();
   const fname = (first.replace(/[^\w .-]/g, '').slice(0, 48).trim() || 'draft') + '.txt';
   upload([new File([text], fname, {type: 'text/plain'})]);
@@ -498,7 +622,7 @@ function splitSents(text) {
 }
 
 function readRebuild() {
-  RD.sents = splitSents(wtext.value);
+  RD.sents = splitSents(latexToSpeech(wtext.value));
   RD.idx = Math.min(RD.idx, Math.max(0, RD.sents.length - 1));
   RD.dirty = false;
 }
@@ -618,7 +742,8 @@ $('wplay').onclick = () => {
   if (RD.on) return readPlay(RD.idx);
   if (!wtext.value.trim()) { toast('Nothing to read — write something first', true); return; }
   readRebuild();
-  const before = splitSents(wtext.value.slice(0, wtext.selectionStart)).length;  // sentence under the cursor
+  if (!RD.sents.length) { toast('Nothing to read — the draft is all comments', true); return; }
+  const before = splitSents(latexToSpeech(wtext.value.slice(0, wtext.selectionStart))).length;  // sentence under the cursor
   readPlay(Math.max(0, before - 1));
 };
 $('wback').onclick = () => readPlay(RD.on ? RD.idx - 1 : 0);
@@ -730,6 +855,8 @@ const delCls = name => delPending.has(name) ? ' danger' : '';
 const ERR_HINTS = [
   [/not enough readable text|scanned|no text layer/i,
    'Scanned PDF (no text layer) or a very short file — no OCR by design. Re-export with a text layer, or upload the .txt version.'],
+  [/narration api|unauthorized|401|403|404|429|api key/i,
+   'The narration API rejected the request — check the base URL, model, and API key in ⚙️ Settings (use “test connection”).'],
   [/cuda|cublas|out of memory|vram|no gpu/i,
    'GPU hiccup (VRAM shared with other services). It auto-retried on CPU — if it keeps failing, lower N_GPU_LAYERS.'],
   [/timed? ?out|temporarily unavailable|connection/i,
@@ -1228,7 +1355,7 @@ document.addEventListener('click', e => {  // "change in Voices tab"-style cross
 function updateDefaults() {
   const v = voiceSel.options[voiceSel.selectedIndex]?.textContent || voiceSel.value;
   const m = modeSel.options[modeSel.selectedIndex]?.textContent || modeSel.value;
-  $('defaultsline').innerHTML = `🎙 ${esc(v)} · ${esc(m)} — <a href="#" data-goto="voices">change in the Voices tab</a>`;
+  $('defaultsline').innerHTML = `🎙 ${esc(v)} · ${esc(m)} — <a href="#" data-goto="voices">change in ⚙️ Settings</a>`;
 }
 
 function renderFeeds() {
@@ -1253,6 +1380,7 @@ $('feedrows').addEventListener('click', e => {
 updateDefaults();
 renderFeeds();
 showTab(localStorage.getItem('pr-tab') || 'library');
+loadSettings();  // server defaults win over localStorage (same settings on every device)
 refresh();
 </script>
 </body>

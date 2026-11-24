@@ -24,10 +24,15 @@ services:
       HF_HOME: /data/models/.cache   # uid 1000 has no $HOME; HF/xet write cache here
       GGUF_REPO: bartowski/Qwen2.5-7B-Instruct-GGUF   # any instruct GGUF works; try 14B on that 48GB RAM
       GGUF_FILE: Qwen2.5-7B-Instruct-Q4_K_M.gguf
-      N_GPU_LAYERS: "12"                              # -1 OOMs on a 6 GB card shared with other GPU workloads
+      N_GPU_LAYERS: "0"                               # local GGUF is CPU-only now: the Windows GPU box does the LLM work
       OMP_NUM_THREADS: "2"                            # TTS render would otherwise starve the whole box
       VOICE: af_heart
       SPEED: "1.1"
+      # BYOK: narrate via the Windows GPU box's Ollama (tailnet) instead of the local GGUF.
+      # The ⚙️ Settings tab stores the same values (and wins over these when set).
+      LLM_BASE_URL: http://100.93.9.90:11434/v1
+      LLM_MODEL: llama3.1:8b
+      # LLM_API_KEY: not needed — keyless gateway
     deploy:
       resources:
         reservations:
