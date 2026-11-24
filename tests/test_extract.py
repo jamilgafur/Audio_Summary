@@ -169,6 +169,38 @@ def test_tex_escaped_specials_read_as_words(tmp_path):
     assert "\\%" not in whole and "comment" not in whole  # % line tail is dropped, escapes inside it too
 
 
+def test_tex_subsections_stay_spoken_with_a_beat(tmp_path):
+    body = PROSE.replace("\n", " ")
+    p = tmp_path / "paper.tex"
+    p.write_text(
+        "\\begin{document}\n\\section{Intro}\n"
+        + body
+        + "\n\\subsection{Details}\n"
+        + body
+        + "\n\\subsection[short]{Long Name}\n"
+        + body
+        + "\n\\end{document}\n"
+    )
+    whole = " ".join(s["text"] for s in extract(p)["sections"])
+    assert "\n\nDetails.\n\n" in whole  # own paragraph: a voice beat around the heading
+    assert "\n\nLong Name.\n\n" in whole  # optional [..] arg accepted
+
+
+def test_tex_lists_speak_items_with_numbers(tmp_path):
+    body = PROSE.replace("\n", " ")
+    p = tmp_path / "paper.tex"
+    p.write_text(
+        "\\begin{document}\n\\section{Intro}\n"
+        + body
+        + "\n\\begin{enumerate}\n\\item First point here.\n\\item Second point here.\n\\end{enumerate}"
+        + "\n\\begin{itemize}\n\\item[Note] A labelled point.\n\\end{itemize}\n\\end{document}\n"
+    )
+    whole = " ".join(s["text"] for s in extract(p)["sections"])
+    assert "\n\n1. First point here." in whole  # enumerated items speak their numbers
+    assert "\n\n2. Second point here." in whole
+    assert "\n\nNote. A labelled point." in whole  # \item[label] speaks the label
+
+
 def test_docx_extracts_paragraph_text(tmp_path):
     import zipfile
 

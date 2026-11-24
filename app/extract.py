@@ -288,6 +288,18 @@ def _tex_arg(cmd: str, text: str) -> str:
     return m.group(1) if m else ""
 
 
+def _number_items(m: re.Match) -> str:
+    """Enumerated list → items spoken as 1., 2., … each on its own line."""
+    n = 0
+
+    def rep(item: re.Match) -> str:
+        nonlocal n
+        n += 1
+        return "\n\n" + (item.group(1) + ". " if item.group(1) else f"{n}. ")
+
+    return re.sub(r"\\item\s*(?:\[([^\]]*)\])?[ \t]*", rep, m.group(0))
+
+
 def _tex_strip(t: str) -> str:
     t = re.sub(r"(?<!\\)%.*", "", t)  # comments
     t = re.sub(r"\\([%$&#_{}])", lambda m: _SPECIALS[m.group(1)], t)  # \% reads as "percent"
@@ -304,8 +316,13 @@ def _tex_strip(t: str) -> str:
         " ",
         t,
     )  # refs/citations
-    t = re.sub(r"\\(?:sub)*section\*?" + _BRACED, r"\1. ", t)  # keep headings as text
+    t = re.sub(r"\\(?:sub)*section\*?(?:\[[^\]]*\])?" + _BRACED, r"\n\n\1.\n\n", t)  # headings: own line + a beat
+    t = re.sub(r"\\begin\{enumerate\}.*?\\end\{enumerate\}", _number_items, t, flags=re.S)  # speak their numbers
+    t = re.sub(
+        r"\\item\s*(?:\[([^\]]*)\])?[ \t]*", lambda m: "\n\n" + (m.group(1) + ". " if m.group(1) else ""), t
+    )  # items: own paragraph
     t = re.sub(r"\\(?:text|emph|textbf|textit|texttt|textrm|underline|title)" + _BRACED, r"\1", t)
+    t = re.sub(r"\\(?:begin|end)\s*\{[^{}]*\}", " ", t)  # leftover env markers, e.g. itemize
     t = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?", " ", t)  # remaining commands
     return re.sub(r"[{}$&]+", " ", t)
 

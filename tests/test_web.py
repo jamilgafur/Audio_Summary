@@ -33,16 +33,15 @@ def test_active_job_operations_return_409():
         sp.unlink()
 
 
-def test_tts_splitter_respects_max_chars():
-    """One sentence longer than the limit must be hard-split, never fed whole to Kokoro."""
+def test_tts_splitter_keeps_sentences_whole():
+    """Batches respect max_chars, but one over-long sentence is never cut mid-sentence —
+    that cut is audible. _render_safe splits it at natural seams under the phoneme cap."""
     from tts import _pieces
 
     assert _pieces("") == []
     assert _pieces("short one. short two.") == ["short one. short two."]
     long_para = "word " * 500 + "."  # single ~2500-char sentence, no breaks
-    pieces = _pieces(long_para, max_chars=1200)
-    assert pieces and all(len(p) <= 1200 for p in pieces)
-    assert "".join(pieces).replace(" ", "") == long_para.replace(" ", "")  # no text lost
+    assert _pieces(long_para, max_chars=1200) == [long_para.strip()]
     two_paras = "first paragraph. " * 100 + "\n\n" + "second paragraph. " * 100
     pieces = _pieces(two_paras, max_chars=200)
     assert all(len(p) <= 200 for p in pieces)
@@ -852,6 +851,46 @@ def test_tts_splits_overlong_phoneme_pieces(monkeypatch, tmp_path):
     duration = tts.synthesize(script, tmp_path / "long.mp3")
     assert len(calls) > 1, "over-cap piece was not split"
     assert duration > 0
+
+
+def test_tts_split_point_prefers_natural_seams():
+    """Over-cap splits must land on a pause — sentence, clause, or space. A mid-clause
+    or mid-number cut is the chunky splice listeners hear inside one sentence."""
+    from tts import _split_point
+
+    text = "First clause here, second clause is here, third clause ends it."
+    cut = _split_point(text)
+    assert text[cut - 1] in ".!,;", f"cut mid-clause: {text[:cut]!r} | {text[cut:]!r}"
+    digits = "3.14159 " * 60  # the dots are decimal points, not sentence ends
+    cut = _split_point(digits)
+    assert digits[cut - 1] == " ", f"cut mid-number: {digits[:cut]!r} | {digits[cut:]!r}"
+
+
+def test_tts_paragraphs_get_a_beat(monkeypatch, tmp_path):
+    """A paragraph break must cost a real pause in the audio — not just Kokoro's edge
+    silence — and the follow-along marks must stay in sync with the inserted pause."""
+    import numpy as np
+
+    import tts
+
+    class FakeKokoro:
+        class _Tok:
+            def phonemize(self, text, lang):
+                return ""  # always under the phoneme cap
+
+        tokenizer = _Tok()
+
+        def create(self, text, voice=None, speed=None, lang=None):
+            return np.zeros(max(1, len(text) * 10), dtype=np.float32), 24000
+
+    monkeypatch.setattr(tts, "_load", lambda: FakeKokoro())
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    marks_path = tmp_path / "para.follow.json"
+    spaced = tts.synthesize("One.\n\nTwo.", tmp_path / "para.mp3", marks_path=marks_path)
+    flat = tts.synthesize("One. Two.", tmp_path / "flat.mp3")
+    assert abs((spaced - flat) - tts._PARA_GAP) < 0.01, "paragraph break must add one pause"
+    marks = json.loads(marks_path.read_text())
+    assert abs(marks["duration"] - spaced) < 0.01  # marks include the pauses
 
 
 def test_recover_orphans_finds_handdropped_raw_named_pdf():

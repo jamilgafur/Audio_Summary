@@ -181,6 +181,7 @@
   #wpane .sent { cursor: pointer; border-radius: 3px; }
   #wpane .sent:hover { background: #38b6ff22; }
   #wpane .sent.on { background: #38b6ff44; }
+  #wpane .sent.para { margin-right: 1.2em; }  /* paragraphs, list items and headings breathe */
   #wtext { flex: 1 1 0; min-width: 0; height: 72vh; margin: 0; padding: .8rem;
     font-size: .95rem; line-height: 1.7; resize: vertical; }
   @media (max-width: 760px) {
@@ -551,10 +552,14 @@ function latexToSpeech(text) {
       '#': ' hash ', '_': ' underscore ', '{': ' open brace ', '}': ' close brace '}[c]))
     .replace(/\\begin\{(?:equation|align|gather|multline|eqnarray|figure|table|tabular|thebibliography)\*?\}[\s\S]*?\\end\{[^{}]*\}/g, ' ')  // math & float bodies
     .replace(/\$\$[\s\S]*?\$\$|\$[^$]*\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g, ' ')  // math
-    .replace(/\\(?:cite[a-z*]*|nocite|ref|eqref|pageref|label|footnote(?:mark|text)?|url|href|bibliographystyle|bibliography|bibitem|input|include|usepackage|documentclass|(?:new|renew|provide)command)(?:\[[^\]]*\]){0,2}\s*(?:\{[^{}]*\}\s*){0,2}/g, ' ')  // citations/refs/includes
-    .replace(/\\(?:(?:sub)*section|chapter|part|paragraph|subparagraph)\*?\s*\{([^{}]*)\}/g, '$1. ')  // headings stay as text
+    .replace(/\\(?:cite[a-z*]*|nocite|ref|eqref|pageref|label|footnote(?:mark|text)?|url|href|bibliographystyle|bibliography|bibitem|input|include|usepackage|documentclass|(?:new|renew|provide)command)(?:\[[^\]]*\]){0,2}[ \t]*(?:\{[^{}]*\}[ \t]*){0,2}/g, ' ')  // citations/refs/includes
+    .replace(/\\(?:(?:sub)*section|chapter|part|paragraph|subparagraph)\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}/g, '\n\n$1.\n\n')  // headings: own line + a beat
     .replace(/\\(?:text\w*|emph|underline|mbox|fbox|framebox|title|author)\s*\{([^{}]*)\}/g, '$1')
-    .replace(/\\item\s*(?:\[[^\]]*\])?/g, '\n')
+    .replace(/\\begin\{enumerate\}[\s\S]*?\\end\{enumerate\}/g, block => {
+      let n = 0;  // enumerated lists speak their numbers
+      return block.replace(/\\item\s*(?:\[([^\]]*)\])?[ \t]*/g, (m, label) => '\n\n' + (label ? label + '.' : ++n + '.') + ' ');
+    })
+    .replace(/\\item\s*(?:\[([^\]]*)\])?/g, (m, label) => '\n\n' + (label ? label + '. ' : ''))  // items: own paragraph
     .replace(/\\(?:begin|end)\s*\{[^{}]*\}/g, ' ')  // remaining env markers
     .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?/g, ' ')  // \noindent, \hline, ...
     .replace(/\\./g, ' ')  // \\ linebreak, \, \; ...
@@ -607,7 +612,7 @@ $('wsend').onclick = () => {
 /* ---- read-aloud: sentence-stepping playback over the draft (verbatim) ----
    One sentence = one cached TTS piece: edits only re-render the sentences they touch,
    so pause → edit → resume re-reads your changes from the same sentence. */
-const RD = {on: false, playing: false, sents: [], idx: 0, cache: new Map(), dirty: false, seq: 0, paneText: ''};
+const RD = {on: false, playing: false, sents: [], beats: new Map(), idx: 0, cache: new Map(), dirty: false, seq: 0, paneText: ''};
 const raudio = new Audio();
 
 function splitSents(text) {
@@ -621,8 +626,39 @@ function splitSents(text) {
   return out;
 }
 
+/* map a read-pane sentence back to its spot in the raw draft: the spoken form can
+   differ (\cite{…} dropped, \% → “percent”), so match verbatim word runs with flexible
+   whitespace — longest run anchored at the sentence start first, that's “the spot”.
+   shortcut: repeated words can hit an earlier occurrence, jump is approximate then */
+function rawOffsetOf(text, sentence) {
+  const words = sentence.match(/[\w'’-]+/g) || [];
+  const hit = (from, n) => {
+    const m = new RegExp(words.slice(from, from + n).join('\\s+')).exec(text);
+    return m ? m.index : -1;
+  };
+  for (let n = words.length; n > 0; n--) {
+    const at = hit(0, n);
+    if (at >= 0) return at;
+  }
+  for (let n = words.length - 1; n > 0; n--) {
+    for (let i = 1; i + n <= words.length; i++) {
+      const at = hit(i, n);
+      if (at >= 0) return at;
+    }
+  }
+  return -1;
+}
+
 function readRebuild() {
-  RD.sents = splitSents(latexToSpeech(wtext.value));
+  const text = latexToSpeech(wtext.value);
+  RD.sents = splitSents(text);
+  RD.beats = new Map();  // sentence index → pause after it: heading/list-item longer than a paragraph
+  let i = 0;
+  for (const para of text.split(/\n{2,}/)) {
+    const n = splitSents(para).length;
+    if (n) RD.beats.set(i + n - 1, n === 1 && para.trim().split(/\s+/).length <= 10 ? 650 : 400);
+    i += n;
+  }
   RD.idx = Math.min(RD.idx, Math.max(0, RD.sents.length - 1));
   RD.dirty = false;
 }
@@ -676,7 +712,7 @@ function scheduleIdleRender() {
 function readRenderPane() {  // spans change only when the text does — not per step
   const pane = $('wpane');
   pane.innerHTML = RD.sents.length
-    ? RD.sents.map((s, i) => `<span class="sent" data-i="${i}">${esc(s)}</span> `).join('')
+    ? RD.sents.map((s, i) => `<span class="sent${RD.beats.has(i) ? ' para' : ''}" data-i="${i}">${esc(s)}</span> `).join('')
     : '<span style="color:var(--pico-muted-color)">Write or paste your draft — the read-aloud view appears here.</span>';
   RD.paneText = wtext.value;
 }
@@ -734,7 +770,10 @@ function readStop() {
 
 raudio.onended = () => {
   if (!RD.on || !RD.playing) return;
-  RD.idx + 1 < RD.sents.length ? readPlay(RD.idx + 1) : readStop();
+  if (RD.idx + 1 >= RD.sents.length) return readStop();
+  const next = RD.idx + 1, go = () => { if (RD.on && RD.playing && RD.idx + 1 === next) readPlay(next); };
+  const beat = RD.beats.get(RD.idx) || 0;
+  beat ? setTimeout(go, beat) : go();  // headings, list items and paragraphs breathe between pieces
 };
 
 $('wplay').onclick = () => {
@@ -752,7 +791,11 @@ $('wstop').onclick = readStop;
 $('wspeed').onchange = () => { raudio.playbackRate = +$('wspeed').value; };
 $('wpane').onclick = e => {
   const s = e.target.closest('.sent');
-  if (s) readPlay(+s.dataset.i);
+  if (!s) return;
+  const i = +s.dataset.i;
+  readPlay(i);  // click-to-seek
+  const at = rawOffsetOf(wtext.value, RD.sents[i]);  // …and take the editor to that spot
+  if (at >= 0) { wtext.focus(); wtext.setSelectionRange(at, at); }
 };
 
 /* upload */

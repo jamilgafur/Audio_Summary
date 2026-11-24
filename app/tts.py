@@ -66,10 +66,13 @@ def _load():
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
+_PARA_GAP = 0.4  # silence between paragraphs: the beat a listener expects at a break
+
 
 def _pieces(text: str, max_chars: int = 1200) -> list[str]:
     """Split script into TTS-sized pieces at paragraph, then sentence, boundaries.
-    A sentence longer than the limit is hard-split — Kokoro must never get one huge ball."""
+    A sentence longer than the limit stays whole: _render_safe cuts it at natural seams
+    to respect the phoneme cap — a mid-sentence cut here is the chunky splice."""
     pieces = []
     for para in re.split(r"\n\s*\n", text):
         para = para.strip()
@@ -77,9 +80,6 @@ def _pieces(text: str, max_chars: int = 1200) -> list[str]:
             continue
         current = ""
         for sentence in _SENTENCE.split(para):
-            while len(sentence) > max_chars:
-                pieces.append(current or sentence[:max_chars])
-                current, sentence = "", sentence[max_chars:]
             if len(current) + len(sentence) > max_chars and current:
                 pieces.append(current)
                 current = ""
@@ -118,19 +118,39 @@ def _render(kokoro, piece: str, voice: str, speed: float):
 
 
 def _render_safe(kokoro, text: str, voice: str, speed: float):
-    """Synthesize under the phoneme cap, splitting at a word boundary when over."""
+    """Synthesize under the phoneme cap, splitting at a natural seam when over."""
     if len(kokoro.tokenizer.phonemize(text, "en-us")) <= _MAX_PHONEMES:
         samples, _sr = kokoro.create(text, voice=voice, speed=speed, lang="en-us")
         return samples
+    cut = _split_point(text)
+    halves = [h for h in (text[:cut].strip(), text[cut:].strip()) if h]
+    return np.concatenate([_render_safe(kokoro, h, voice, speed) for h in halves])
+
+
+_SEAMS = (".!?", ",;:\u2014\n", " ")  # best→worst seam to restart prosody at
+
+
+def _split_point(text: str) -> int:
+    """Where to cut an over-long piece in two: at a sentence end near the middle if one
+    exists, else a clause break, else a word space. Kokoro restarts prosody on every
+    create() call, so a seam at a natural pause is inaudible — a seam mid-clause is the
+    chunky splice listeners notice."""
     mid = len(text) // 2
-    cut = text.rfind(" ", 0, mid)
+    lo, hi = max(1, len(text) // 4), min(len(text) - 1, 3 * len(text) // 4 + 1)
+    for seams in _SEAMS:
+        cuts = []
+        for i in range(lo, hi):
+            if text[i] not in seams:
+                continue
+            if text[i] == "." and text[i - 1].isdigit() and text[i + 1].isdigit():
+                continue  # 3.14 is not a sentence end
+            cuts.append(i + 1)  # seam char stays with the left half
+        if cuts:
+            return min(cuts, key=lambda i: abs(i - mid))
+    cut = text.rfind(" ", 0, mid)  # space-free run: hard split is the only option
     if cut <= 0:
         cut = text.find(" ", mid)
-    if 0 < cut < len(text) - 1:
-        left, right = text[:cut], text[cut + 1 :]  # word boundary: drop the space
-    else:
-        left, right = text[:mid], text[mid:]  # pathological space-free run: hard split
-    return np.concatenate([_render_safe(kokoro, left, voice, speed), _render_safe(kokoro, right, voice, speed)])
+    return cut + 1 if 0 < cut < len(text) - 1 else mid
 
 
 def synthesize(
@@ -144,7 +164,12 @@ def synthesize(
     voice = voice or os.getenv("VOICE", "af_heart")
     speed = float(os.getenv("SPEED", "1.1"))
 
-    pieces = _pieces(script)
+    pieces, para_end = [], []
+    for para in re.split(r"\n\s*\n", script):
+        ps = _pieces(para)  # batching never crosses a paragraph, so pieces match _pieces(script)
+        if ps:
+            pieces.extend(ps)
+            para_end.extend([False] * (len(ps) - 1) + [True])
     chunks = []
     raw_marks = []  # (script offset, duration) per piece
     t = 0.0
@@ -153,6 +178,9 @@ def synthesize(
         samples = _render(kokoro, piece, voice, speed)
         chunks.append(samples)
         dur = len(samples) / _SAMPLE_RATE
+        if para_end[i] and i < len(pieces) - 1:  # paragraph break: stitch in a beat of silence
+            chunks.append(np.zeros(int(_PARA_GAP * _SAMPLE_RATE), dtype=np.float32))
+            dur += _PARA_GAP  # the mark spans the pause so follow-along stays in sync
         if marks_path is not None:
             start = script.find(piece, cursor)
             if start < 0:  # identical pieces confuse find-from-cursor; fall back
